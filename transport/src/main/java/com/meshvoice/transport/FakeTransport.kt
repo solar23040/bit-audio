@@ -29,7 +29,8 @@ data class LinkConfig(
 
     internal fun sampleLatency(random: Random): Long {
         if (latencyMs.first == latencyMs.last) return latencyMs.first
-        return random.nextLong(latencyMs.first, latencyMs.last + 1)
+        val span = latencyMs.last - latencyMs.first + 1
+        return latencyMs.first + (random.nextDouble() * span).toLong()
     }
 }
 
