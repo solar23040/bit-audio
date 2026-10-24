@@ -80,9 +80,8 @@ trailing bytes without unbounded allocation. The mesh layer seals this whole byt
   the same 10 s size and quality targets. Run them on a physical phone/emulator when available.
 - The plan forbids local builds; push and read the `build` GitHub Actions run instead.
 
-## Contract note for Agent A
+## Contract note
 
-`AGENTS.md` freezes the `:audio` namespace to `com.meshvoice.audio` and `docs/interfaces.md`
-mentions `audio/src/main/java/com/solar23040/bitaudio/audio/AudioCodec.kt`. That path is stale:
-the implementation lives in `audio/src/main/kotlin/com/meshvoice/audio/`. The method signatures
-match `docs/interfaces.md`, and codec failures use `AudioCodecException`.
+`AGENTS.md` freezes the `:audio` namespace to `com.meshvoice.audio`. The implementation lives
+in `audio/src/main/kotlin/com/meshvoice/audio/`; `docs/interfaces.md` records the same package.
+Method signatures match the contract, and codec failures use `AudioCodecException`.

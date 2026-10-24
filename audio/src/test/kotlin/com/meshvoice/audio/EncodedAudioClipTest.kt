@@ -23,6 +23,12 @@ class EncodedAudioClipTest {
     }
 
     @Test
+    fun payloadSizeMatchesDocumentedLayout() {
+        // header(8) + two (u16 length + Opus packet) entries.
+        assertEquals(8 + (2 + 10) + (2 + 12), samplePayload().size)
+    }
+
+    @Test
     fun rejectsUnsupportedPayloadVersion() {
         val payload = samplePayload()
         payload[0] = 2
@@ -67,7 +73,7 @@ class EncodedAudioClipTest {
     @Test
     fun rejectsTooManyFramesInPayload() {
         val frameCount = AudioConfig.MAX_FRAMES + 1
-        val buffer = ByteBuffer.allocate(9 + frameCount * 3).order(ByteOrder.LITTLE_ENDIAN)
+        val buffer = ByteBuffer.allocate(8 + frameCount * 3).order(ByteOrder.LITTLE_ENDIAN)
         buffer.put(EncodedAudioClip.PAYLOAD_VERSION.toByte())
         buffer.put(EncodedAudioClip.CODEC_OPUS_16K_MONO_20MS.toByte())
         buffer.putShort(frameCount.toShort())

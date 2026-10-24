@@ -71,7 +71,7 @@ class EncodedAudioClip(
         const val PAYLOAD_VERSION = 1
         const val CODEC_OPUS_16K_MONO_20MS = 1
 
-        private const val HEADER_BYTES = 9
+        private const val HEADER_BYTES = 8
 
         fun fromPayload(payload: ByteArray): EncodedAudioClip {
             require(payload.size >= HEADER_BYTES) {

@@ -104,15 +104,11 @@ internal class JniOpusEngine(
             )
             check(decoderHandle != 0L) { "Failed to create Opus decoder" }
         } catch (e: RuntimeException) {
-            if (encoderHandle != 0L) {
-                OpusNative.encoderDestroy(encoderHandle)
-                encoderHandle = 0
-            }
-            if (decoderHandle != 0L) {
-                OpusNative.decoderDestroy(decoderHandle)
-                decoderHandle = 0
-            }
+            releaseNative()
             throw AudioCodecException("Failed to initialize Opus codec", e)
+        } catch (e: LinkageError) {
+            releaseNative()
+            throw AudioCodecException("Failed to load the Opus native library", e)
         }
     }
 
@@ -152,6 +148,10 @@ internal class JniOpusEngine(
     override fun close() {
         if (closed) return
         closed = true
+        releaseNative()
+    }
+
+    private fun releaseNative() {
         if (encoderHandle != 0L) {
             OpusNative.encoderDestroy(encoderHandle)
             encoderHandle = 0

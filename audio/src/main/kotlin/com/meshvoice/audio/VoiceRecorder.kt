@@ -169,6 +169,7 @@ class VoiceRecorder @JvmOverloads constructor(
         return record
     }
 
+    @RequiresPermission(android.Manifest.permission.RECORD_AUDIO)
     private fun recordLoop(record: AudioRecord, clipBuffer: ClipBuffer) {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO)
         val chunk = ShortArray(AudioConfig.FRAME_SAMPLES)
