@@ -140,8 +140,8 @@ fun SettingsScreen(
                     }
                 }
                 Text(
-                    text = "Undelivered notes expire after this window. Applied to new " +
-                        "channels and the store-and-forward queue.",
+                    text = "Undelivered notes older than this are removed when the app starts. " +
+                        "Delivered notes stay until you delete the channel.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -32,6 +32,14 @@ class AppGraph(context: Context) {
     val notes = NoteRepository(appContext, scope)
     val clips = ClipStore(appContext)
 
+    init {
+        scope.launch {
+            val retentionMs = settings.current.retentionHours * 60L * 60L * 1000L
+            val expired = notes.removeExpired(System.currentTimeMillis() - retentionMs)
+            expired.forEach { clips.delete(it.fileName) }
+        }
+    }
+
     val recorder = PreviewRecorder()
     val player = PreviewPlayer()
 

@@ -72,6 +72,19 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) {
         return removed
     }
 
+    /**
+     * Drops undelivered notes older than [cutoff] and returns them so their
+     * clips can be deleted. Delivered notes stay until the channel is removed.
+     */
+    fun removeExpired(cutoff: Long): List<VoiceNote> {
+        val expired = _notes.value.expiredNotes(cutoff)
+        if (expired.isEmpty()) return emptyList()
+        val expiredIds = expired.mapTo(HashSet()) { it.id }
+        _notes.value = _notes.value.filterNot { it.id in expiredIds }
+        persist()
+        return expired
+    }
+
     private fun load(): List<VoiceNote> = runCatching {
         if (!file.isFile) return@runCatching emptyList()
         val array = JSONArray(file.readText())
@@ -144,3 +157,7 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) {
         )
     }.getOrNull()?.takeIf { it.id.isNotBlank() && it.fileName.isNotBlank() }
 }
+
+/** Undelivered notes older than [cutoff] are outside the retention window. */
+internal fun List<VoiceNote>.expiredNotes(cutoff: Long): List<VoiceNote> =
+    filter { it.state != NoteState.Delivered && it.createdAt < cutoff }

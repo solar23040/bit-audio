@@ -15,6 +15,7 @@ import androidx.core.app.ServiceCompat
 import com.solar23040.bitaudio.BitAudioApplication
 import com.solar23040.bitaudio.MainActivity
 import com.solar23040.bitaudio.R
+import com.solar23040.bitaudio.permissions.AppPermissions
 import com.solar23040.bitaudio.transport.MeshRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -48,14 +49,25 @@ class MeshForegroundService : Service() {
             return START_NOT_STICKY
         }
 
-        ServiceCompat.startForeground(
-            this,
-            NOTIFICATION_ID,
-            buildNotification(),
-            foregroundServiceType(),
-        )
+        // Android 14+ rejects a connectedDevice service without a BLE grant.
+        if (!AppPermissions.hasBle(this)) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        val foregroundStarted = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(),
+                foregroundServiceType(),
+            )
+        }.isSuccess
+        if (!foregroundStarted) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
-        runtime.start()
+        runCatching { runtime.start() }
         startDutyCycle()
         return START_STICKY
     }
@@ -65,8 +77,8 @@ class MeshForegroundService : Service() {
     override fun onDestroy() {
         dutyCycleJob?.cancel()
         dutyCycleJob = null
-        runtime.setScanning(true)
-        runtime.stop()
+        runCatching { runtime.setScanning(false) }
+        runCatching { runtime.stop() }
         scope.cancel()
         ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
         super.onDestroy()
@@ -140,6 +152,7 @@ class MeshForegroundService : Service() {
         private const val ACTION_STOP = "com.solar23040.bitaudio.STOP_MESH"
 
         fun start(context: Context) {
+            if (!AppPermissions.hasBle(context)) return
             runCatching {
                 ContextCompat.startForegroundService(
                     context,
