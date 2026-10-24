@@ -4,14 +4,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.Random
 import java.util.TreeSet
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Per-link simulation settings. Latency is sampled uniformly from [latencyMs]
@@ -37,13 +36,9 @@ data class LinkConfig(
 /**
  * In-memory network used by unit tests and the simulator.
  *
- * Nodes connect explicitly. [FakeTransport.send] is non-blocking, matching the
- * real transport: delivery happens on [scope] after the sampled latency, and a
- * lost frame is silently dropped. In `runTest`, pass `backgroundScope` so
- * virtual time advances deterministically.
- *
- * The network is thread-safe. Callbacks run on [scope] and exceptions from a
- * callback are contained so one bad consumer cannot stop the simulation.
+ * Nodes connect explicitly. [FakeTransport.send] is suspending: latency is applied
+ * to the caller and a lost frame is silently dropped. Callback exceptions are
+ * contained so one bad consumer cannot stop the simulation.
  */
 class FakeNetwork(
     private val defaultLink: LinkConfig = LinkConfig(),
@@ -73,23 +68,25 @@ class FakeNetwork(
         synchronized(lock) {
             if (nodes.remove(id) == null) return
             links.keys.removeAll { it.a == id || it.b == id }
-            nodes.values.forEach { it.neighbours.remove(id) }
+            nodes.values.forEach { node ->
+                node.neighbours.remove(id)
+            }
+            nodes.keys.toList().forEach(::refreshPeers)
         }
     }
 
     /** Connect two nodes. Calling this again replaces the link settings. */
     fun connect(a: String, b: String, link: LinkConfig? = null) {
         require(a != b) { "A node cannot connect to itself: $a" }
-        val (peerA, peerB) = synchronized(lock) {
+        synchronized(lock) {
             require(a in nodes) { "Unknown node: $a" }
             require(b in nodes) { "Unknown node: $b" }
             links[LinkKey.of(a, b)] = link ?: defaultLink
-            nodes[a]?.neighbours?.add(b)
-            nodes[b]?.neighbours?.add(a)
-            Peer(a) to Peer(b)
+            nodes.getValue(a).neighbours.add(b)
+            nodes.getValue(b).neighbours.add(a)
+            refreshPeers(a)
+            refreshPeers(b)
         }
-        nodes[b]?.peers?.tryEmit(peerA)
-        nodes[a]?.peers?.tryEmit(peerB)
     }
 
     fun connect(a: FakeTransport, b: FakeTransport, link: LinkConfig? = null) {
@@ -102,6 +99,8 @@ class FakeNetwork(
             if (links.remove(LinkKey.of(a, b)) == null) return
             nodes[a]?.neighbours?.remove(b)
             nodes[b]?.neighbours?.remove(a)
+            refreshPeers(a)
+            refreshPeers(b)
         }
     }
 
@@ -109,35 +108,37 @@ class FakeNetwork(
         disconnect(a.id, b.id)
     }
 
-    /** Current neighbours of [id], sorted by address. Useful in topology tests. */
+    /** Current neighbours of [id], sorted by id. Useful in topology tests. */
     fun snapshot(id: String): List<Peer> = synchronized(lock) {
-        val node = nodes[id] ?: return emptyList()
-        node.neighbours.map(::Peer)
+        nodes[id]?.neighbours?.map { Peer(id = it) } ?: emptyList()
     }
 
-    internal fun peers(id: String): Flow<Peer> {
+    internal fun peers(id: String): Flow<List<Peer>> {
         val node = synchronized(lock) { nodes[id] } ?: error("Unknown node: $id")
-        return node.peers.asSharedFlow()
+        return node.peers.asStateFlow()
     }
 
-    internal fun setReceiver(id: String, callback: (Peer, ByteArray) -> Unit) {
+    internal fun addReceiver(id: String, callback: (ReceivedFrame) -> Unit): AutoCloseable {
         val node = synchronized(lock) { nodes[id] } ?: error("Unknown node: $id")
-        node.receiver = callback
+        node.receivers.add(callback)
+        return AutoCloseable { node.receivers.remove(callback) }
     }
 
-    internal fun send(fromId: String, toId: String, bytes: ByteArray) {
+    internal suspend fun send(fromId: String, toId: String, bytes: ByteArray) {
         val link = synchronized(lock) {
-            if (fromId !in nodes) return
-            links[LinkKey.of(fromId, toId)]
+            if (fromId !in nodes) null else links[LinkKey.of(fromId, toId)]
         } ?: return
 
         if (random.nextDouble() < link.lossRate) return
         val latency = link.sampleLatency(random)
-        val payload = bytes.copyOf()
-        scope.launch {
-            if (latency > 0) delay(latency)
-            val receiver = synchronized(lock) { nodes[toId]?.receiver } ?: return@launch
-            runCatching { receiver(Peer(fromId), payload) }
+        if (latency > 0) delay(latency)
+
+        val receivers = synchronized(lock) {
+            nodes[toId]?.receivers?.toList()
+        } ?: return
+        val frame = ReceivedFrame(from = Peer(id = fromId), bytes = bytes.copyOf())
+        for (receiver in receivers) {
+            runCatching { receiver(frame) }
         }
     }
 
@@ -146,15 +147,15 @@ class FakeNetwork(
         if (ownsScope) scope.cancel()
     }
 
+    private fun refreshPeers(id: String) {
+        val node = nodes[id] ?: return
+        node.peers.value = node.neighbours.map { Peer(id = it) }
+    }
+
     private class Node {
         val neighbours = TreeSet<String>()
-        val peers = MutableSharedFlow<Peer>(
-            replay = MAX_REPLAY_PEERS,
-            extraBufferCapacity = 32,
-            onBufferOverflow = BufferOverflow.DROP_OLDEST,
-        )
-        @Volatile
-        var receiver: ((Peer, ByteArray) -> Unit)? = null
+        val peers = MutableStateFlow<List<Peer>>(emptyList())
+        val receivers = CopyOnWriteArrayList<(ReceivedFrame) -> Unit>()
     }
 
     internal data class LinkKey(val a: String, val b: String) {
@@ -166,7 +167,6 @@ class FakeNetwork(
 
     companion object {
         const val DEFAULT_SEED: Long = 0x5EEDL
-        private const val MAX_REPLAY_PEERS = 128
     }
 }
 
@@ -175,15 +175,14 @@ class FakeTransport internal constructor(
     private val network: FakeNetwork,
     val id: String,
 ) : Transport {
-    override fun send(peer: Peer, bytes: ByteArray) {
-        network.send(id, peer.address, bytes)
+    override suspend fun send(peer: Peer, bytes: ByteArray) {
+        network.send(id, peer.id, bytes)
     }
 
-    override fun onReceive(cb: (Peer, ByteArray) -> Unit) {
-        network.setReceiver(id, cb)
-    }
+    override fun onReceive(callback: (ReceivedFrame) -> Unit): AutoCloseable =
+        network.addReceiver(id, callback)
 
-    override fun peers(): Flow<Peer> = network.peers(id)
+    override fun peers(): Flow<List<Peer>> = network.peers(id)
 
     /** Convenience for simulator code; equivalent to `network.connect(this, other)`. */
     fun connectTo(other: FakeTransport, link: LinkConfig? = null) {

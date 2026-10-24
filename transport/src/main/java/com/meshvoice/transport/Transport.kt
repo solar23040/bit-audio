@@ -3,31 +3,39 @@ package com.meshvoice.transport
 import kotlinx.coroutines.flow.Flow
 
 /**
- * A directly reachable BLE peer.
+ * A directly reachable neighbour.
  *
- * [address] is the current BLE MAC address. Android may rotate it, so mesh-level identity must
- * not depend on it; [Peer] is only the transport hop address.
+ * [id] identifies the link and is only meaningful while the link exists; it is not a mesh sender
+ * identity. [address] is the BLE MAC when known (Android may rotate it), and [rssi] is the last scan
+ * reading.
  */
 data class Peer(
-    val address: String,
-    val name: String? = null,
-    val rssi: Int = 0,
+    val id: String,
+    val address: String? = null,
+    val rssi: Int? = null,
 )
+
+data class ReceivedFrame(
+    val from: Peer,
+    val bytes: ByteArray,
+)
+
+/** Raised when a frame cannot be handed to the transport. */
+class TransportException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 /**
  * Byte-oriented transport between directly connected devices.
  *
- * Implementations fragment and reassemble payloads, so callers can pass a whole mesh packet.
- * Delivery is best-effort: the mesh layer (TTL, dedup, store-and-forward) remains responsible for
- * end-to-end delivery.
+ * Implementations fragment and reassemble payloads, so callers can pass one complete mesh packet.
+ * The transport does not guarantee delivery, ordering, or deduplication; the mesh layer owns those.
  */
 interface Transport {
-    /** Queues [bytes] for [peer]. Non-blocking; failures are reported through the error callback. */
-    fun send(peer: Peer, bytes: ByteArray)
+    /** Hands one complete frame to [peer]. Suspends while the link is being established. */
+    suspend fun send(peer: Peer, bytes: ByteArray)
 
-    /** Installs the receive callback. A later call replaces the previous callback. */
-    fun onReceive(cb: (Peer, ByteArray) -> Unit)
+    /** Registers a receive callback. Close the returned handle to unregister it. */
+    fun onReceive(callback: (ReceivedFrame) -> Unit): AutoCloseable
 
-    /** Emits peers as they are discovered while scanning. */
-    fun peers(): Flow<Peer>
+    /** Emits the current neighbour set on subscription and after it changes. */
+    fun peers(): Flow<List<Peer>>
 }

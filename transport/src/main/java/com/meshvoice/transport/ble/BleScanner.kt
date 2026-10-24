@@ -11,10 +11,9 @@ import android.os.ParcelUuid
 import android.util.Log
 import com.meshvoice.transport.BleConfig
 import com.meshvoice.transport.Peer
-import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
-import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentHashMap
 
 @SuppressLint("MissingPermission")
@@ -27,12 +26,8 @@ internal class BleScanner(
         (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
 
     private val known = ConcurrentHashMap<String, Peer>()
-    private val _peers = MutableSharedFlow<Peer>(
-        replay = config.maxPeers,
-        extraBufferCapacity = 32,
-        onBufferOverflow = BufferOverflow.DROP_OLDEST,
-    )
-    val peers: SharedFlow<Peer> = _peers.asSharedFlow()
+    private val _peers = MutableStateFlow<List<Peer>>(emptyList())
+    val peers: StateFlow<List<Peer>> = _peers.asStateFlow()
 
     private var scanning = false
 
@@ -74,7 +69,7 @@ internal class BleScanner(
         }
     }
 
-    fun snapshot(): List<Peer> = known.values.toList()
+    fun snapshot(): List<Peer> = _peers.value
 
     private val callback = object : ScanCallback() {
         override fun onScanResult(callbackType: Int, result: ScanResult) {
@@ -98,33 +93,17 @@ internal class BleScanner(
         } catch (t: Throwable) {
             return
         } ?: return
+        if (known.containsKey(address)) return
 
-        val advertisedName = try {
-            result.scanRecord?.deviceName
-        } catch (t: Throwable) {
-            null
+        if (known.size >= config.maxPeers) {
+            known.keys.firstOrNull()?.let { known.remove(it) }
         }
-        val systemName = try {
-            device.name
-        } catch (t: Throwable) {
-            null
-        }
-        val peer = Peer(
+        known[address] = Peer(
+            id = address,
             address = address,
-            name = advertisedName ?: systemName,
             rssi = result.rssi,
         )
-        val previous = known[address]
-        if (previous == null) {
-            if (known.size >= config.maxPeers) {
-                known.keys.firstOrNull()?.let(known::remove)
-            }
-            known[address] = peer
-            _peers.tryEmit(peer)
-        } else {
-            // Keep the discovery event stable; only fill in a name learned later.
-            known[address] = peer.copy(name = previous.name ?: peer.name)
-        }
+        _peers.value = known.values.sortedBy { it.id }
     }
 
     private companion object {

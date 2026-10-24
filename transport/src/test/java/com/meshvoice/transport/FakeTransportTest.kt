@@ -26,14 +26,14 @@ class FakeTransportTest {
         val b = network.addNode("b")
         network.connect(a, b)
 
-        val received = CompletableDeferred<Pair<Peer, ByteArray>>()
-        b.onReceive { peer, bytes -> received.complete(peer to bytes) }
+        val received = CompletableDeferred<ReceivedFrame>()
+        b.onReceive { frame -> received.complete(frame) }
 
         a.send(Peer("b"), byteArrayOf(1, 2, 3))
 
-        val (from, bytes) = received.await()
-        assertEquals("a", from.address)
-        assertArrayEquals(byteArrayOf(1, 2, 3), bytes)
+        val frame = received.await()
+        assertEquals("a", frame.from.id)
+        assertArrayEquals(byteArrayOf(1, 2, 3), frame.bytes)
     }
 
     @Test
@@ -44,7 +44,7 @@ class FakeTransportTest {
         network.connect(a, b)
 
         var received = false
-        b.onReceive { _, _ -> received = true }
+        b.onReceive { received = true }
         a.send(Peer("b"), byteArrayOf(9))
         advanceUntilIdle()
 
@@ -77,9 +77,8 @@ class FakeTransportTest {
         val b = network.addNode("b")
 
         network.connect(a, b)
-        advanceUntilIdle()
 
-        assertEquals(Peer("b"), a.peers().first())
+        assertEquals(listOf(Peer("b")), a.peers().first())
     }
 
     @Test
@@ -89,14 +88,14 @@ class FakeTransportTest {
         val b = network.addNode("b")
 
         var received = false
-        b.onReceive { _, _ -> received = true }
+        b.onReceive { _ -> received = true }
         a.send(Peer("b"), byteArrayOf(1))
         advanceUntilIdle()
         assertFalse(received)
     }
 
     @Test
-    fun receiverReplacementStopsOldCallback() = runTest {
+    fun closingHandleStopsThatCallbackOnly() = runTest {
         val network = fastNetwork()
         val a = network.addNode("a")
         val b = network.addNode("b")
@@ -104,8 +103,10 @@ class FakeTransportTest {
 
         var oldCount = 0
         var newCount = 0
-        b.onReceive { _, _ -> oldCount++ }
-        b.onReceive { _, _ -> newCount++ }
+        val oldHandle = b.onReceive { _ -> oldCount++ }
+        b.onReceive { _ -> newCount++ }
+        oldHandle.close()
+
         a.send(Peer("b"), byteArrayOf(1))
         advanceUntilIdle()
 
@@ -135,7 +136,7 @@ class FakeTransportTest {
         network.connect(a, b)
 
         var delivered = 0
-        b.onReceive { _, _ ->
+        b.onReceive { _ ->
             delivered += 1
             if (delivered == 1) error("consumer bug")
         }

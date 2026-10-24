@@ -15,7 +15,7 @@ internal class TransferEngine(
     private val clock: () -> Long = System::currentTimeMillis,
     private val onTransferFailed: ((Peer, Int, String) -> Unit)? = null,
 ) {
-    private data class TransferKey(val address: String, val transferId: Int)
+    private data class TransferKey(val peerId: String, val transferId: Int)
 
     private class Outgoing(
         val peer: Peer,
@@ -72,10 +72,10 @@ internal class TransferEngine(
             "ack bitmap for $totalChunks chunks does not fit in $frameBytes bytes"
         }
 
-        val transferId = allocateTransferId(peer.address)
+        val transferId = allocateTransferId(peer.id)
         val chunks = Fragmenter.fragment(transferId, payload, frameBytes)
         val now = clock()
-        outgoing[TransferKey(peer.address, transferId)] = Outgoing(
+        outgoing[TransferKey(peer.id, transferId)] = Outgoing(
             peer = peer,
             transferId = transferId,
             chunks = chunks,
@@ -96,7 +96,7 @@ internal class TransferEngine(
             return Inbound()
         }
         val chunk = ChunkCodec.decode(frame) ?: return Inbound()
-        val outcome = reassembler.offer(peer.address, chunk)
+        val outcome = reassembler.offer(peer.id, chunk)
         return Inbound(
             acks = listOf(outcome.ack),
             deliveries = outcome.completed?.let { listOf(it) } ?: emptyList(),
@@ -146,7 +146,7 @@ internal class TransferEngine(
     /** Call after the chunks from [poll] were actually queued on a connection. */
     @Synchronized
     fun markRetransmitted(peer: Peer, transferId: Int, now: Long = clock()) {
-        val state = outgoing[TransferKey(peer.address, transferId)] ?: return
+        val state = outgoing[TransferKey(peer.id, transferId)] ?: return
         state.attempts += 1
         state.lastAckAt = now
     }
@@ -169,7 +169,7 @@ internal class TransferEngine(
     fun activeIncomingCount(): Int = reassembler.activeCount()
 
     private fun applyAck(peer: Peer, ack: AckCodec.Ack) {
-        val key = TransferKey(peer.address, ack.transferId)
+        val key = TransferKey(peer.id, ack.transferId)
         val state = outgoing[key] ?: return
         if (ack.totalChunks != state.chunks.size) return
 
@@ -186,11 +186,11 @@ internal class TransferEngine(
         if (ackedAfter == state.acked.size) outgoing.remove(key)
     }
 
-    private fun allocateTransferId(address: String): Int {
+    private fun allocateTransferId(peerId: String): Int {
         var candidate = nextTransferId
         repeat(1_000) {
             candidate = if (candidate == Int.MAX_VALUE) 1 else candidate + 1
-            val collision = outgoing.keys.any { it.address == address && it.transferId == candidate }
+            val collision = outgoing.keys.any { it.peerId == peerId && it.transferId == candidate }
             if (!collision) {
                 nextTransferId = candidate
                 return candidate

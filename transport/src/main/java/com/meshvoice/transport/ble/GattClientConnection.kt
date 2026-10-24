@@ -149,7 +149,7 @@ internal class GattClientConnection(
     private fun deliver(value: ByteArray) {
         if (value.isEmpty() || value.size > config.transfer.maxFrameBytes) return
         try {
-            onFrame(Peer(address), value.copyOf())
+            onFrame(Peer(id = address, address = address), value.copyOf())
         } catch (t: Throwable) {
             onError(t)
         }

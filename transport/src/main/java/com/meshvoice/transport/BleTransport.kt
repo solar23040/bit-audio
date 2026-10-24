@@ -1,14 +1,14 @@
-package com.meshvoice.transport.ble
+package com.meshvoice.transport
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothManager
 import android.content.Context
 import android.util.Log
-import com.meshvoice.transport.BleConfig
-import com.meshvoice.transport.BlePermissions
-import com.meshvoice.transport.Peer
-import com.meshvoice.transport.Transport
+import com.meshvoice.transport.ble.BleAdvertiser
+import com.meshvoice.transport.ble.BleScanner
+import com.meshvoice.transport.ble.ConnectionRegistry
+import com.meshvoice.transport.ble.GattServerManager
 import com.meshvoice.transport.protocol.TransferEngine
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -22,6 +22,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.Closeable
 import java.io.IOException
+import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -48,7 +49,7 @@ class BleTransport @JvmOverloads constructor(
     private val engine = TransferEngine(
         settings = config.transfer,
         onTransferFailed = { peer, transferId, reason ->
-            report(IOException("transfer $transferId to ${peer.address} failed: $reason"))
+            report(IOException("transfer $transferId to ${peer.id} failed: $reason"))
         },
     )
     private val scanner = BleScanner(appContext, config, ::report)
@@ -59,9 +60,7 @@ class BleTransport @JvmOverloads constructor(
 
     private val started = AtomicBoolean(false)
     private var maintenanceJob: Job? = null
-
-    @Volatile
-    private var receiveCallback: ((Peer, ByteArray) -> Unit)? = null
+    private val receiveCallbacks = CopyOnWriteArrayList<(ReceivedFrame) -> Unit>()
 
     val isRunning: Boolean get() = started.get()
 
@@ -69,7 +68,7 @@ class BleTransport @JvmOverloads constructor(
         if (!started.compareAndSet(false, true)) return
         if (!BlePermissions.hasPermissions(appContext)) {
             started.set(false)
-            report(SecurityException("BLE runtime permissions are not granted"))
+            report(TransportException("BLE runtime permissions are not granted"))
             return
         }
         val adapter = bluetoothAdapter()
@@ -81,7 +80,7 @@ class BleTransport @JvmOverloads constructor(
         }
         if (adapter == null || !enabled) {
             started.set(false)
-            report(IllegalStateException("Bluetooth is unavailable or disabled"))
+            report(TransportException("Bluetooth is unavailable or disabled"))
             return
         }
 
@@ -111,43 +110,40 @@ class BleTransport @JvmOverloads constructor(
         connections.closeAll()
         server.stop()
         engine.clear()
+        receiveCallbacks.clear()
         Log.i(TAG, "BLE transport stopped")
     }
 
-    override fun send(peer: Peer, bytes: ByteArray) {
-        if (!started.get()) {
-            report(IllegalStateException("transport is not started"))
-            return
-        }
+    override suspend fun send(peer: Peer, bytes: ByteArray) {
+        if (!started.get()) throw TransportException("transport is not started")
         if (bytes.size > config.transfer.maxPayloadBytes) {
-            report(IllegalArgumentException("payload is too large: ${bytes.size} bytes"))
-            return
+            throw TransportException("payload is too large: ${bytes.size} bytes")
         }
-        val payload = bytes.copyOf()
-        scope.launch {
-            try {
-                val connection = connections.getOrConnect(peer)
-                    ?: throw IOException("cannot connect to ${peer.address}")
-                val mtu = connection.awaitReady(config.connectTimeoutMs)
-                    ?: throw IOException("connection to ${peer.address} not ready")
-                val frameBytes = minOf(config.transfer.maxFrameBytes, mtu - ATT_OVERHEAD)
-                val transfer = engine.startTransfer(peer, payload, frameBytes)
-                for (chunk in transfer.chunks) {
-                    connection.write(chunk)
-                }
-            } catch (t: CancellationException) {
-                throw t
-            } catch (t: Throwable) {
-                report(t)
+        try {
+            val connection = connections.getOrConnect(peer)
+                ?: throw TransportException("cannot connect to ${peer.id}")
+            val mtu = connection.awaitReady(config.connectTimeoutMs)
+                ?: throw TransportException("connection to ${peer.id} not ready")
+            val frameBytes = minOf(config.transfer.maxFrameBytes, mtu - ATT_OVERHEAD)
+            val transfer = engine.startTransfer(peer, bytes.copyOf(), frameBytes)
+            for (chunk in transfer.chunks) {
+                connection.write(chunk)
             }
+        } catch (t: CancellationException) {
+            throw t
+        } catch (t: TransportException) {
+            throw t
+        } catch (t: Throwable) {
+            throw TransportException("send to ${peer.id} failed", t)
         }
     }
 
-    override fun onReceive(cb: (Peer, ByteArray) -> Unit) {
-        receiveCallback = cb
+    override fun onReceive(callback: (ReceivedFrame) -> Unit): AutoCloseable {
+        receiveCallbacks.add(callback)
+        return AutoCloseable { receiveCallbacks.remove(callback) }
     }
 
-    override fun peers(): Flow<Peer> = scanner.peers
+    override fun peers(): Flow<List<Peer>> = scanner.peers
 
     override fun close() {
         stop()
@@ -173,13 +169,13 @@ class BleTransport @JvmOverloads constructor(
             for (ack in result.acks) {
                 sendAck(peer, ack)
             }
-            if (result.deliveries.isNotEmpty()) {
-                val callback = receiveCallback
-                if (callback != null) {
-                    for (payload in result.deliveries) {
-                        scope.launch {
+            if (result.deliveries.isNotEmpty() && receiveCallbacks.isNotEmpty()) {
+                for (payload in result.deliveries) {
+                    val received = ReceivedFrame(peer, payload)
+                    scope.launch {
+                        for (callback in receiveCallbacks) {
                             try {
-                                callback(peer, payload)
+                                callback(received)
                             } catch (t: Throwable) {
                                 report(t)
                             }
@@ -198,8 +194,9 @@ class BleTransport @JvmOverloads constructor(
             connection.write(ack)
             return
         }
-        if (!server.notify(peer.address, ack)) {
-            Log.d(TAG, "ack to ${peer.address} dropped; sender will retransmit")
+        val address = peer.address ?: peer.id
+        if (!server.notify(address, ack)) {
+            Log.d(TAG, "ack to $address dropped; sender will retransmit")
         }
     }
 

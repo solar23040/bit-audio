@@ -199,7 +199,10 @@ internal class GattServerManager(
                 value.size <= config.transfer.maxFrameBytes
             ) {
                 try {
-                    onFrame(Peer(address), value.copyOf())
+                    onFrame(
+                        Peer(id = address, address = address),
+                        value.copyOf(),
+                    )
                 } catch (t: Throwable) {
                     onError(t)
                     status = BluetoothGatt.GATT_FAILURE
@@ -244,8 +247,8 @@ internal class GattServerManager(
         override fun onDescriptorReadRequest(
             device: BluetoothDevice,
             requestId: Int,
-            descriptor: BluetoothGattDescriptor,
             offset: Int,
+            descriptor: BluetoothGattDescriptor,
         ) {
             if (descriptor.uuid != config.cccdUuid) return
             val value = if (subscribed[device.address] == true) {

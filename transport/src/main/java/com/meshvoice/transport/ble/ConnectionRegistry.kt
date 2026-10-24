@@ -24,11 +24,12 @@ internal class ConnectionRegistry(
 
     fun getOrConnect(peer: Peer): GattClientConnection? {
         synchronized(lock) {
-            val existing = connections[peer.address]
+            val existing = connections[peer.id]
             if (existing != null && existing.isUsable) return existing
 
+            val address = peer.address ?: peer.id
             val device = try {
-                adapter?.getRemoteDevice(peer.address)
+                adapter?.getRemoteDevice(address)
             } catch (t: Throwable) {
                 onError(t)
                 null
@@ -36,21 +37,21 @@ internal class ConnectionRegistry(
 
             val connection = GattClientConnection(
                 context = context,
-                address = peer.address,
+                address = address,
                 device = device,
                 config = config,
                 scope = scope,
                 onFrame = onFrame,
                 onError = onError,
             )
-            connections[peer.address] = connection
+            connections[peer.id] = connection
             connection.connect()
             return connection
         }
     }
 
     fun readyConnection(peer: Peer): GattClientConnection? =
-        connections[peer.address]?.takeIf { it.isReady }
+        connections[peer.id]?.takeIf { it.isReady }
 
     fun closeAll() {
         synchronized(lock) {
