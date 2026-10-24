@@ -556,6 +556,7 @@ private fun TalkBar(
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MissingChannel(onBack: () -> Unit) {
     Scaffold(

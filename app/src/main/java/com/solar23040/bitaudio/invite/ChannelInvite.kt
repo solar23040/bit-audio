@@ -23,7 +23,7 @@ object ChannelIdCodec {
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(DOMAIN)
         digest.update(key)
-        digest.digest().take(CHANNEL_ID_SIZE).toHex()
+        digest.digest().copyOf(CHANNEL_ID_SIZE).toHex()
     }.getOrNull()
 
     fun isValid(id: String): Boolean =
