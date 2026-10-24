@@ -1,0 +1,20 @@
+{
+  "channel_key_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "identity_seed_hex": null,
+  "victim": {
+    "sender_id_hex": null,
+    "pubkey_hex": null
+  },
+  "ble": {
+    "address": "AA:BB:CC:DD:EE:FF",
+    "rx_char_uuid": "00000000-0000-0000-0000-000000000000",
+    "tx_char_uuid": null,
+    "service_uuid": null,
+    "mtu": 247
+  },
+  "sim_out": "../sim/inbox.jsonl",
+  "limits": {
+    "max_pps": 50,
+    "max_frames": 2000
+  }
+}

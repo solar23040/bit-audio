@@ -1,0 +1,24 @@
+# Gradle
+.gradle/
+**/build/
+local.properties
+
+# Android / native build output
+.externalNativeBuild/
+.cxx/
+captures/
+*.apk
+*.aab
+*.aar
+output-metadata.json
+
+# IDE
+.idea/
+*.iml
+.DS_Store
+
+# Secrets and local environment
+.env
+.env.*
+*.keystore
+*.jks

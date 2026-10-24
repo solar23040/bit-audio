@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Bit Audio</string>
+    <string name="service_title">Bit Audio mesh</string>
+    <string name="service_text">Keeping the mesh available for nearby voice notes</string>
+    <string name="service_stop">Stop</string>
+    <string name="service_channel_name">Mesh service</string>
+    <string name="service_channel_description">Keeps BLE scanning and relaying alive in the background</string>
+</resources>

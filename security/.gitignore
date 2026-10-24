@@ -1,0 +1,6 @@
+config.json
+*.local.json
+captures/
+__pycache__/
+*.pyc
+.venv/
