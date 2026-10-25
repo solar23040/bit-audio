@@ -17,7 +17,7 @@ class ContractVectorTest {
 
     @Test
     fun `docs v1 contract vector verifies with production crypto`() {
-        val text = Files.readString(vectorPath())
+        val text = String(Files.readAllBytes(vectorPath()), Charsets.UTF_8)
         val pubkey = hex(field(text, "identity_pubkey_hex"))
         val channelKey = hex(field(text, "channel_key_hex"))
         val timestampMs = Regex("\"timestamp_ms\":\\s*(\\d+)")
