@@ -36,6 +36,7 @@ from wire import (
     frame_summary,
     from_hex,
     hexs,
+    now_ms,
     parse_packet,
     sender_id_for_pubkey,
 )
@@ -44,7 +45,7 @@ from wire import (
 def _verify_under(frame: bytes, pubkey: bytes) -> bool:
     packet = parse_packet(frame)
     try:
-        VerifyKey(pubkey).verify(packet.signing_input, packet.sig)
+        VerifyKey(pubkey).verify(packet.signing_input, packet.signature)
         return True
     except (BadSignatureError, ValueError):
         return False
@@ -54,7 +55,9 @@ async def run(args: argparse.Namespace) -> int:
     cfg = resolve_config(args)
     signing_key, pubkey = identity_from_config(cfg)
     own_sender_id = (
-        from_hex(args.sender_id_hex) if args.sender_id_hex else sender_id_for_pubkey(pubkey)
+        from_hex(args.sender_id_hex)
+        if args.sender_id_hex
+        else sender_id_for_pubkey(cfg.channel_key, pubkey, now_ms())
     )
     if len(own_sender_id) != 8:
         raise SystemExit("--sender-id-hex must be 8 bytes")

@@ -75,17 +75,18 @@ def make_corpus(channel_key: bytes, count: int = 8) -> list[bytes]:
 
 
 def gen_random(rng: random.Random) -> bytes:
-    length = rng.choice([0, 1, 15, 30, 31, 63, 94, 95, 96, 120, 240, 300, 512, 900, 1500])
+    length = rng.choice([0, 1, 15, 30, 42, 63, 106, 107, 120, 147, 300, 405, 512, 900, 1500])
     if rng.random() < 0.5 and length >= HEADER_LEN:
         header = header_bytes(
             version=rng.choice([1, 1, 0, 255]),
             type_=rng.randrange(256),
             msg_id=rng.randbytes(8),
+            channel_id=rng.randbytes(8),
             sender_id=rng.randbytes(8),
             ttl=rng.randrange(256),
             chunk_idx=rng.randrange(65536),
             total_chunks=rng.choice([0, 1, 2, 255, 256, 257, 65535]),
-            ts_ms=rng.choice([0, now_ms(), 2**64 - 1]),
+            timestamp_ms=rng.choice([0, now_ms(), 2**64 - 1]),
         )
         return (header + rng.randbytes(max(0, length - HEADER_LEN)))[:length]
     return rng.randbytes(length)
@@ -98,30 +99,31 @@ def gen_boundary(rng: random.Random) -> bytes:
             version=rng.choice([1, 0, 2, 255]),
             type_=rng.choice([0, 1, 255]),
             msg_id=rng.randbytes(8),
+            channel_id=rng.randbytes(8),
             sender_id=rng.randbytes(8) if rng.random() < 0.9 else bytes(8),
-            ttl=rng.choice([0, 1, 5, 6, 255]),
+            ttl=rng.choice([0, 1, 5, 6, 8, 9, 255]),
             chunk_idx=rng.choice([0, 1, 255, 256, 65534, 65535]),
             total_chunks=total,
-            ts_ms=rng.choice([0, 1, now_ms(), 2**63, 2**64 - 1]),
+            timestamp_ms=rng.choice([0, 1, now_ms(), 2**63, 2**64 - 1]),
         )
         + rng.randbytes(64)
-        + rng.randbytes(rng.choice([0, 1, 16, 95, 200]))
+        + rng.randbytes(rng.choice([0, 1, 16, 40, 200, 405]))
     )
 
 
 def gen_crypto(rng: random.Random, corpus: list[bytes]) -> bytes:
     frame = bytearray(rng.choice(corpus))
-    if len(frame) <= 95:
+    if len(frame) <= HEADER_LEN:
         return bytes(frame)
     target = rng.choice(["sig", "nonce", "tag", "payload", "truncate"])
     if target == "sig":
-        index = rng.randrange(31, 95)
+        index = rng.randrange(43, 107)
     elif target == "nonce":
-        index = rng.randrange(95, min(119, len(frame)))
+        index = rng.randrange(107, min(131, len(frame)))
     elif target == "tag":
         index = len(frame) - 1
     elif target == "payload":
-        index = rng.randrange(95, len(frame))
+        index = rng.randrange(107, len(frame))
     else:
         return bytes(frame[: rng.randrange(0, len(frame))])
     frame[index] ^= 1 << rng.randrange(8)

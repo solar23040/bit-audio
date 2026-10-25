@@ -53,11 +53,12 @@ def _header(
         version=version,
         type_=type_,
         msg_id=msg_id,
+        channel_id=rng.randbytes(8),
         sender_id=sender_id,
         ttl=ttl,
         chunk_idx=chunk_idx,
         total_chunks=total_chunks,
-        ts_ms=ts_ms if ts_ms is not None else now_ms(),
+        timestamp_ms=ts_ms if ts_ms is not None else now_ms(),
     )
 
 
