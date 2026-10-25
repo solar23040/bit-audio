@@ -96,6 +96,9 @@ internal class Rig(
         (meshes.getValue("b") as? MeshNode)?.start()
         (meshes.getValue("c") as? MeshNode)?.start()
         rawHandle = transports.getValue("c").onReceive { frame -> rawC.add(frame.bytes.copyOf()) }
+        // Let peer collectors and the initial (empty) store handoff settle before
+        // the first frame, so later raw-frame counts only see real relays.
+        testScope.testScheduler.runCurrent()
     }
 
     fun deliveredAt(id: String): List<MeshMessage> = delivered.getValue(id).toList()
