@@ -176,7 +176,7 @@ class FloodMesh(
         val senderId = RotatingSenderId.derive(
             channel.keyBytes(),
             localPublicKey,
-            now / 1_000L,
+            now,
         )
         val counter = try {
             packetStore.nextCounter(channel.id)
@@ -254,7 +254,7 @@ class FloodMesh(
         val senderPublicKey = channel.roster.resolve(
             channel.keyBytes(),
             packet.senderId,
-            packet.timestampMs / 1_000L,
+            packet.timestampMs,
         ) ?: return
 
         val canonical = packet.canonicalHeader()

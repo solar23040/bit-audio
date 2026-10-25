@@ -206,7 +206,7 @@ class MeshNode(
                 senderId = RotatingSenderId.derive(
                     channelSecret = state.key,
                     senderPublicKey = localPublicKey,
-                    timestampSeconds = now / 1000L,
+                    timestampMs = now,
                 ),
                 ttl = state.ttl,
                 chunkIndex = index,
@@ -324,7 +324,7 @@ class MeshNode(
         val identity = state.directory.resolve(
             channelSecret = state.key,
             senderId = packet.senderId,
-            timestampSeconds = packet.timestampMs / 1000L,
+            timestampMs = packet.timestampMs,
         ) ?: return
         val identityHex = identity.toHex()
 
