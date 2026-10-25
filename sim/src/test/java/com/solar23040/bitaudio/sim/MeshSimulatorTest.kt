@@ -1,3 +1,5 @@
+@file:OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+
 package com.solar23040.bitaudio.sim
 
 import com.meshvoice.transport.FakeNetwork
