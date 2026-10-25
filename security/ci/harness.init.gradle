@@ -1,0 +1,9 @@
+// CI-only Gradle init script. It registers the Agent H security harness as a
+// project without touching settings.gradle.kts (owned by Agent A).
+//
+//   ./gradlew -I security/ci/harness.init.gradle :security-harness:testDebugUnitTest
+gradle.settingsEvaluated { settings ->
+    settings.include(':security-harness')
+    settings.project(':security-harness').projectDir =
+        new File(settings.rootDir, 'security/harness')
+}

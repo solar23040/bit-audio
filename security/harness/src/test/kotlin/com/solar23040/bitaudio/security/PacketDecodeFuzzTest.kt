@@ -1,6 +1,7 @@
 package com.solar23040.bitaudio.security
 
 import java.util.concurrent.CopyOnWriteArrayList
+import kotlin.time.Duration.Companion.seconds
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -18,62 +19,65 @@ import org.junit.Test
 class PacketDecodeFuzzTest {
 
     @Test
-    fun `decoder survives a time-boxed fuzz run`() = runTest {
+    fun `decoder survives a time-boxed fuzz run`() {
         val seconds = (System.getenv("SECURITY_FUZZ_SECONDS")?.toLongOrNull() ?: 20L)
             .coerceIn(5L, 300L)
 
-        for (kind in MeshKind.entries) {
-            val rig = Rig(this, kind, UnconfinedTestDispatcher(testScheduler))
-            val uncaught = CopyOnWriteArrayList<Throwable>()
-            val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
-            Thread.setDefaultUncaughtExceptionHandler { _, error -> uncaught.add(error) }
-            try {
-                val senderId = Frames.senderId(rig.channelKey, rig.alicePublicKey, Rig.NOW_MS)
-                val rng = java.util.Random(0x2026_1025L + kind.ordinal)
-                val corpus = Frames.build(
-                    channelKey = rig.channelKey,
-                    signingSeed = rig.aliceSeed,
-                    senderId = senderId,
-                    messageId = Frames.uniqueMessageId(0x8101),
-                    counter = 1,
-                    ttl = 5,
-                    plaintext = "corpus".toByteArray(),
-                )
+        // Two implementations, so allow the whole test body well past the budget.
+        runTest(timeout = (seconds * 3 + 60).seconds) {
+            for (kind in MeshKind.entries) {
+                val rig = Rig(this, kind, UnconfinedTestDispatcher(testScheduler))
+                val uncaught = CopyOnWriteArrayList<Throwable>()
+                val previousHandler = Thread.getDefaultUncaughtExceptionHandler()
+                Thread.setDefaultUncaughtExceptionHandler { _, error -> uncaught.add(error) }
+                try {
+                    val senderId = Frames.senderId(rig.channelKey, rig.alicePublicKey, Rig.NOW_MS)
+                    val rng = java.util.Random(0x2026_1025L + kind.ordinal)
+                    val corpus = Frames.build(
+                        channelKey = rig.channelKey,
+                        signingSeed = rig.aliceSeed,
+                        senderId = senderId,
+                        messageId = Frames.uniqueMessageId(0x8101),
+                        counter = 1,
+                        ttl = 5,
+                        plaintext = "corpus".toByteArray(),
+                    )
 
-                var iterations = 0
-                var resets = 0
-                val deadline = System.nanoTime() + seconds * 1_000_000_000L
-                while (System.nanoTime() < deadline && iterations < 250_000) {
-                    rig.send("a", "b", generate(rng, corpus))
-                    iterations++
+                    var iterations = 0
+                    var resets = 0
+                    val deadline = System.nanoTime() + seconds * 1_000_000_000L
+                    while (System.nanoTime() < deadline && iterations < 250_000) {
+                        rig.send("a", "b", generate(rng, corpus))
+                        iterations++
 
-                    if (iterations % 2_000 == 0) {
-                        val before = rig.deliveredAt("b").size
-                        rig.send("a", "b", resetFrame(rig, senderId, ++resets))
-                        assertEquals(
-                            "$kind: valid delivery stopped after $iterations fuzz frames",
-                            before + 1,
-                            rig.deliveredAt("b").size,
-                        )
+                        if (iterations % 2_000 == 0) {
+                            val before = rig.deliveredAt("b").size
+                            rig.send("a", "b", resetFrame(rig, senderId, ++resets))
+                            assertEquals(
+                                "$kind: valid delivery stopped after $iterations fuzz frames",
+                                before + 1,
+                                rig.deliveredAt("b").size,
+                            )
+                        }
                     }
+
+                    val before = rig.deliveredAt("b").size
+                    rig.send("a", "b", resetFrame(rig, senderId, ++resets))
+                    assertEquals(
+                        "$kind: final valid frame was not delivered",
+                        before + 1,
+                        rig.deliveredAt("b").size,
+                    )
+
+                    println(
+                        "[fuzz][$kind] $iterations frames in ${seconds}s " +
+                            "(${iterations / seconds.coerceAtLeast(1)}/s), $resets valid resets delivered",
+                    )
+                    assertTrue("$kind: uncaught parser error: ${uncaught.firstOrNull()}", uncaught.isEmpty())
+                } finally {
+                    Thread.setDefaultUncaughtExceptionHandler(previousHandler)
+                    rig.close()
                 }
-
-                val before = rig.deliveredAt("b").size
-                rig.send("a", "b", resetFrame(rig, senderId, ++resets))
-                assertEquals(
-                    "$kind: final valid frame was not delivered",
-                    before + 1,
-                    rig.deliveredAt("b").size,
-                )
-
-                println(
-                    "[fuzz][$kind] $iterations frames in ${seconds}s " +
-                        "(${iterations / seconds.coerceAtLeast(1)}/s), $resets valid resets delivered",
-                )
-                assertTrue("$kind: uncaught parser error: ${uncaught.firstOrNull()}", uncaught.isEmpty())
-            } finally {
-                Thread.setDefaultUncaughtExceptionHandler(previousHandler)
-                rig.close()
             }
         }
     }

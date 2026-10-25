@@ -1,3 +1,4 @@
+import org.gradle.api.tasks.testing.Test
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -17,15 +18,12 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
+}
 
-    testOptions {
-        unitTests.all {
-            it.systemProperty(
-                "security.contractVector",
-                rootProject.file("security/contract-vectors.json").absolutePath,
-            )
-        }
-    }
+val contractVector = rootProject.file("security/contract-vectors.json")
+
+tasks.withType<Test>().configureEach {
+    systemProperty("security.contractVector", contractVector.absolutePath)
 }
 
 kotlin {

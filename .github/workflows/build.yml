@@ -94,7 +94,7 @@ jobs:
       - name: Real mesh + crypto attack suite
         run: >
           ./gradlew --no-daemon --stacktrace
-          -I security/ci/harness.init.gradle.kts
+          -I security/ci/harness.init.gradle
           :security-harness:testDebugUnitTest
           --tests "com.solar23040.bitaudio.security.MeshAttackTest"
           --tests "com.solar23040.bitaudio.security.ContractVectorTest"
@@ -142,7 +142,7 @@ jobs:
           SECURITY_FUZZ_SECONDS: "90"
         run: >
           ./gradlew --no-daemon --stacktrace
-          -I security/ci/harness.init.gradle.kts
+          -I security/ci/harness.init.gradle
           :security-harness:testDebugUnitTest
           --tests "com.solar23040.bitaudio.security.PacketDecodeFuzzTest"
 

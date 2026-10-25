@@ -1,6 +1,6 @@
 package com.solar23040.bitaudio.security
 
-import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -37,7 +37,7 @@ class MeshAttackTest {
                     plaintext = "forged".toByteArray(),
                 )
                 rig.send("a", "b", forged)
-                advanceUntilIdle()
+                runCurrent()
                 assertTrue(
                     "$kind: forged sender was delivered: b=${rig.deliveredAt("b").size}",
                     rig.deliveredAt("b").isEmpty(),
@@ -54,7 +54,7 @@ class MeshAttackTest {
                     ttl = 5,
                 )
                 rig.send("a", "b", unknown)
-                advanceUntilIdle()
+                runCurrent()
                 assertTrue("$kind: unresolved sender was delivered", rig.deliveredAt("b").isEmpty())
 
                 // Baseline proves the identity/roster is accepted.
@@ -68,7 +68,7 @@ class MeshAttackTest {
                     plaintext = "baseline".toByteArray(),
                 )
                 rig.send("a", "b", valid)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals("$kind: baseline was not delivered", 1, rig.deliveredAt("b").size)
                 assertTrue("$kind: baseline was not relayed", rig.rawFramesAtC().isNotEmpty())
             } finally {
@@ -93,7 +93,7 @@ class MeshAttackTest {
                 )
                 rig.send("a", "b", frame)
                 rig.send("a", "b", frame)
-                advanceUntilIdle()
+                runCurrent()
 
                 assertEquals("$kind: replay delivered twice", 1, rig.deliveredAt("b").size)
                 assertEquals("$kind: replay reached the far node twice", 1, rig.deliveredAt("c").size)
@@ -142,7 +142,7 @@ class MeshAttackTest {
                 for ((name, frame) in cases) {
                     val rawBefore = rig.rawFramesAtC().size
                     rig.send("a", "b", frame)
-                    advanceUntilIdle()
+                    runCurrent()
                     assertEquals(
                         "$kind: $name was delivered",
                         deliveriesBefore,
@@ -154,7 +154,7 @@ class MeshAttackTest {
                 // The parser must still work after the malformed batch.
                 val after = valid()
                 rig.send("a", "b", after)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals(
                     "$kind: node did not recover after malformed input",
                     deliveriesBefore + 1,
@@ -183,7 +183,7 @@ class MeshAttackTest {
                     plaintext = "ttl zero".toByteArray(),
                 )
                 rig.send("a", "b", zero)
-                advanceUntilIdle()
+                runCurrent()
                 assertTrue("$kind: ttl=0 was delivered", rig.deliveredAt("b").isEmpty())
                 assertTrue("$kind: ttl=0 was relayed", rig.rawFramesAtC().isEmpty())
 
@@ -197,7 +197,7 @@ class MeshAttackTest {
                     plaintext = "ttl one".toByteArray(),
                 )
                 rig.send("a", "b", one)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals("$kind: ttl=1 not delivered", 1, rig.deliveredAt("b").size)
                 assertTrue("$kind: ttl=1 was relayed", rig.rawFramesAtC().isEmpty())
 
@@ -211,7 +211,7 @@ class MeshAttackTest {
                     plaintext = "ttl two".toByteArray(),
                 )
                 rig.send("a", "b", two)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals("$kind: ttl=2 not delivered", 2, rig.deliveredAt("b").size)
                 assertEquals("$kind: ttl=2 not relayed exactly once", 1, rig.rawFramesAtC().size)
                 assertEquals(
@@ -245,7 +245,7 @@ class MeshAttackTest {
 
                 val baseline = valid("baseline")
                 rig.send("a", "b", baseline)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals("$kind: baseline not delivered", 1, rig.deliveredAt("b").size)
                 val baselineRaw = rig.rawFramesAtC().size
                 assertTrue("$kind: baseline not relayed", baselineRaw > 0)
@@ -277,7 +277,7 @@ class MeshAttackTest {
                     val deliveredBefore = rig.deliveredAt("b").size
                     val rawBefore = rig.rawFramesAtC().size
                     rig.send("a", "b", frame)
-                    advanceUntilIdle()
+                    runCurrent()
                     assertEquals("$kind: $name was delivered", deliveredBefore, rig.deliveredAt("b").size)
                     assertEquals("$kind: $name was relayed", rawBefore, rig.rawFramesAtC().size)
                 }
@@ -310,7 +310,7 @@ class MeshAttackTest {
                 val beforeSplice = rig.deliveredAt("b").size
                 rig.send("a", "b", chunk0)
                 rig.send("a", "b", chunk1)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals(
                     "$kind: inconsistent shared header was reassembled",
                     beforeSplice,
@@ -344,7 +344,7 @@ class MeshAttackTest {
                 )
                 rig.send("a", "b", good0)
                 rig.send("a", "b", good1)
-                advanceUntilIdle()
+                runCurrent()
                 assertEquals(
                     "$kind: valid multi-chunk message rejected",
                     beforeSplice + 1,
@@ -375,7 +375,7 @@ class MeshAttackTest {
                     }
                     rig.send("a", "b", frame)
                 }
-                advanceUntilIdle()
+                runCurrent()
 
                 // Validly signed claims that each announce 256 chunks: forces the
                 // bounded partial-message cache instead of an allocation per msg.
@@ -393,9 +393,9 @@ class MeshAttackTest {
                         plaintext = ByteArray(16) { index.toByte() },
                     )
                     rig.send("a", "b", frame)
-                    if (index % 50 == 49) advanceUntilIdle()
+                    if (index % 50 == 49) runCurrent()
                 }
-                advanceUntilIdle()
+                runCurrent()
 
                 val valid = Frames.build(
                     channelKey = rig.channelKey,
@@ -407,7 +407,7 @@ class MeshAttackTest {
                     plaintext = "still alive".toByteArray(),
                 )
                 rig.send("a", "b", valid)
-                advanceUntilIdle()
+                runCurrent()
 
                 assertEquals(
                     "$kind: flood prevented valid delivery",
@@ -451,7 +451,7 @@ class MeshAttackTest {
                 )
                 rig.send("a", "b", bobFrame)
                 rig.send("a", "b", aliceFrame)
-                advanceUntilIdle()
+                runCurrent()
 
                 val delivered = rig.deliveredAt("b").map { String(it.payload) }
                 if (delivered.size == 1) {
@@ -487,7 +487,7 @@ class MeshAttackTest {
                     plaintext = "counter zero".toByteArray(),
                 )
                 rig.send("a", "b", frame)
-                advanceUntilIdle()
+                runCurrent()
                 val accepted = rig.deliveredAt("b").isNotEmpty()
                 if (accepted) {
                     println("[SEC-019][$kind] OPEN: counter=0 accepted (docs require 1..2^32-1)")
