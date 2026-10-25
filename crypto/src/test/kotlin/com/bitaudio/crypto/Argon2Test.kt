@@ -49,14 +49,14 @@ class Argon2Test {
     @Test
     fun `output length is honoured`() {
         val params = Argon2Params(iterations = 1, memoryKib = 32, parallelism = 1, outputLength = 24)
-        val key = ChannelKeys.fromPassphrase("pw".toCharArray(), ByteArray(8) { 9 }, params)
+        val key = ChannelKeys.fromPassphrase("pw".toCharArray(), ByteArray(16) { 9 }, params)
         assertEquals(24, key.size)
     }
 
     @Test
     fun `short salt is rejected`() {
         assertThrows(IllegalArgumentException::class.java) {
-            ChannelKeys.fromPassphrase("pw".toCharArray(), ByteArray(7), Argon2Params())
+            ChannelKeys.fromPassphrase("pw".toCharArray(), ByteArray(15), Argon2Params())
         }
     }
 
@@ -80,10 +80,16 @@ class Argon2Test {
     }
 
     @Test
+    fun `channel id matches the wire-format vector`() {
+        val key = ByteArray(32) { 0x11 }
+        assertEquals("fdbe3737dd8e363b", ChannelKeys.channelId(key).toHex())
+        assertEquals(ChannelKeys.CHANNEL_ID_SIZE, ChannelKeys.channelId(key).size)
+    }
+
+    @Test
     fun `channel id is stable and key-scoped`() {
         val key = ChannelKeys.generate()
         assertArrayEquals(ChannelKeys.channelId(key), ChannelKeys.channelId(key.copyOf()))
-        assertEquals(ChannelKeys.CHANNEL_ID_SIZE, ChannelKeys.channelId(key).size)
         assertFalse(ChannelKeys.channelId(key).contentEquals(ChannelKeys.channelId(ChannelKeys.generate())))
     }
 }

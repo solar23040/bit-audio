@@ -81,7 +81,7 @@ async def run(args: argparse.Namespace) -> int:
             cfg = resolve_config(args)
             signing_key, _ = identity_from_config(cfg)
         for item in message:
-            packet = replace(parse_packet(item.frame), ts_ms=now_ms())
+            packet = replace(parse_packet(item.frame), timestamp_ms=now_ms())
             if signing_key is not None:
                 packet = replace(packet, sig=signing_key.sign(packet.signing_input).signature)
             outgoing.append(packet.to_bytes())

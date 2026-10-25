@@ -245,4 +245,5 @@ object PacketCrypto
 - [x] `FakeNetwork` / `FakeTransport` support loss, latency, topology changes,
       and node removal.
 - [x] CI workflow runs unit tests, lint, `assembleDebug`, and uploads the APK.
-- [ ] First green CI run on GitHub Actions (see README).
+- [x] First green CI run on GitHub Actions: run `40125690964` passed unit
+      tests, lint, and `assembleDebug` on `agent-a/phase0` (see README badge).

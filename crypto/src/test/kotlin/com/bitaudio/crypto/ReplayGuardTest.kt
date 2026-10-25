@@ -1,101 +1,178 @@
 package com.bitaudio.crypto
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReplayGuardTest {
 
-    private val sender = ByteArray(8) { 7 }
-    private val otherSender = ByteArray(8) { 9 }
-    private val now = 1_700_000_000L
+    private val channelA = ByteArray(8) { 1 }
+    private val channelB = ByteArray(8) { 2 }
+    private val alice = ByteArray(32) { 3 }
+    private val bob = ByteArray(32) { 4 }
+    private val nowMs = 1_700_000_000_000L
 
-    private fun guard(clockSeconds: Long = now): ReplayGuard =
-        ReplayGuard(timestampWindowSeconds = 60, clock = { clockSeconds * 1000L })
+    private fun guard(
+        retentionSeconds: Long = 24 * 60 * 60,
+        clockMs: Long = nowMs,
+        maxMessagesPerSender: Int = 8192,
+    ): ReplayGuard = ReplayGuard(
+        retentionSeconds = retentionSeconds,
+        maxMessagesPerSender = maxMessagesPerSender,
+        clock = { clockMs },
+    )
 
     @Test
-    fun `first packet is accepted, duplicate message id is rejected`() {
+    fun `first message is accepted, duplicate message id is rejected`() {
         val guard = guard()
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, messageId = 1, timestampSeconds = now))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, messageId = 1, timestampSeconds = now))
-    }
-
-    @Test
-    fun `different senders have independent replay state`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, messageId = 1, timestampSeconds = now))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(otherSender, messageId = 1, timestampSeconds = now))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, messageId = 1, timestampSeconds = now))
-    }
-
-    @Test
-    fun `timestamp window rejects stale and future packets`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.STALE, guard.check(sender, messageId = 1, timestampSeconds = now - 61))
-        assertEquals(ReplayVerdict.FUTURE, guard.check(sender, messageId = 2, timestampSeconds = now + 61))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, messageId = 3, timestampSeconds = now - 60))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, messageId = 4, timestampSeconds = now + 60))
-    }
-
-    @Test
-    fun `rejected timestamps do not poison the cache`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.STALE, guard.check(sender, messageId = 1, timestampSeconds = now - 100))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, messageId = 1, timestampSeconds = now))
-    }
-
-    @Test
-    fun `counter window allows reordering but rejects duplicates and old packets`() {
-        val guard = guard()
-
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now, counter = 100))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 2, now, counter = 110))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 3, now, counter = 105))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 4, now, counter = 105))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 5, now, counter = 100))
-
-        // 45 is more than 64 behind the high-water mark of 110.
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 6, now, counter = 45))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 7, now, counter = 111))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 8, now, counter = 110))
-    }
-
-    @Test
-    fun `counter state is per sender`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now, counter = 5))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(otherSender, 2, now, counter = 5))
-    }
-
-    @Test
-    fun `negative counter is rejected`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 1, now, counter = -1))
-    }
-
-    @Test
-    fun `forget clears a sender`() {
-        val guard = guard()
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 1, now))
-
-        guard.forget(sender)
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now))
-    }
-
-    @Test
-    fun `seen id cache stays bounded`() {
-        val guard = ReplayGuard(
-            timestampWindowSeconds = 60,
-            maxSeenIdsPerSender = 2,
-            clock = { now * 1000L },
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
         )
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 2, now))
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 3, now))
+        assertEquals(
+            ReplayVerdict.REPLAY,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+    }
 
-        // ID 1 was evicted; with the timestamp window this only happens for
-        // packets still inside the window, which is the accepted trade-off.
-        assertEquals(ReplayVerdict.ACCEPT, guard.check(sender, 1, now))
-        assertEquals(ReplayVerdict.REPLAY, guard.check(sender, 3, now))
+    @Test
+    fun `late counters are accepted but cannot be reused for another message`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 10, counter = 10, timestampMs = nowMs),
+        )
+        // Store-and-forward may deliver counter 5 after counter 10.
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 11, counter = 5, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.COUNTER_REUSED,
+            guard.check(channelA, alice, messageId = 12, counter = 5, timestampMs = nowMs),
+        )
+        assertEquals(10L, guard.highestCounter(channelA, alice))
+    }
+
+    @Test
+    fun `same counter and message is a duplicate, not a counter reuse`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.REPLAY,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+    }
+
+    @Test
+    fun `channel and identity are both part of the replay key`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelB, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, bob, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+    }
+
+    @Test
+    fun `future skew is 120 seconds`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.FUTURE,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs + 120_001),
+        )
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 2, counter = 2, timestampMs = nowMs + 120_000),
+        )
+    }
+
+    @Test
+    fun `timestamps older than retention are expired`() {
+        val guard = guard(retentionSeconds = 60)
+        assertEquals(
+            ReplayVerdict.EXPIRED,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs - 60_001),
+        )
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 2, counter = 2, timestampMs = nowMs - 60_000),
+        )
+    }
+
+    @Test
+    fun `invalid counters are rejected`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.INVALID,
+            guard.check(channelA, alice, messageId = 1, counter = 0, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.INVALID,
+            guard.check(channelA, alice, messageId = 2, counter = 0x1_0000_0000L, timestampMs = nowMs),
+        )
+    }
+
+    @Test
+    fun `malformed channel or identity is invalid without throwing`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.INVALID,
+            guard.check(ByteArray(7), alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.INVALID,
+            guard.check(channelA, ByteArray(31), messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+    }
+
+    @Test
+    fun `stale helper only affects rebroadcast decisions`() {
+        val guard = guard()
+        assertTrue(guard.isStale(nowMs - 120_001))
+        assertFalse(guard.isStale(nowMs - 120_000))
+    }
+
+    @Test
+    fun `forget drops the identity state`() {
+        val guard = guard()
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        guard.forget(channelA, alice)
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+    }
+
+    @Test
+    fun `bounded cache evicts oldest messages`() {
+        val guard = guard(maxMessagesPerSender = 1)
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 2, counter = 2, timestampMs = nowMs),
+        )
+        // The bounded-cache trade-off: an evicted ID can be accepted again.
+        assertEquals(
+            ReplayVerdict.ACCEPT,
+            guard.check(channelA, alice, messageId = 1, counter = 1, timestampMs = nowMs),
+        )
     }
 }
