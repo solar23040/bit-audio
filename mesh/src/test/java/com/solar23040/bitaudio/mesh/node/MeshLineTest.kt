@@ -34,7 +34,8 @@ class MeshLineTest {
 
         assertEquals(1, received.size)
         assertArrayEquals(payload, received.single().payload)
-        assertEquals(4, received.single().hopCount)
+        // Three relays (n1..n3) decrement the TTL from 5 to 2 on a four-link line.
+        assertEquals(3, received.single().hopCount)
     }
 
     @Test
