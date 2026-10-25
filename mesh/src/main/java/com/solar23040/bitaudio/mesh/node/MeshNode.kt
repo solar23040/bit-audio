@@ -218,13 +218,13 @@ class MeshNode(
             val sealed = PacketCrypto.sealPayload(
                 crypto = crypto,
                 channelKey = state.key,
-                headerWithoutSignature = canonical,
-                payload = plaintext,
+                headerPrefix = canonical,
+                plaintext = plaintext,
             )
             val signature = PacketCrypto.signPacket(
                 crypto = crypto,
-                headerWithoutSignature = canonical,
-                payload = sealed,
+                headerPrefix = canonical,
+                sealedChunk = sealed,
             )
             val packet = MeshPacket(
                 messageId = messageId,
@@ -332,8 +332,8 @@ class MeshNode(
         if (!PacketCrypto.verifyPacket(
                 crypto = crypto,
                 senderPublicKey = identity,
-                headerWithoutSignature = canonical,
-                payload = packet.sealedChunk,
+                headerPrefix = canonical,
+                sealedChunk = packet.sealedChunk,
                 signature = packet.signature,
             )
         ) {
@@ -343,8 +343,8 @@ class MeshNode(
         val plaintext = PacketCrypto.openPayload(
             crypto = crypto,
             channelKey = state.key,
-            headerWithoutSignature = canonical,
-            sealedPayload = packet.sealedChunk,
+            headerPrefix = canonical,
+            sealedChunk = packet.sealedChunk,
         ) ?: return
 
         if (!acceptCounter(channelId.hex, identityHex, packet.messageIdHex, packet.counter, now)) return

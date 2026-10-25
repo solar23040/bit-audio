@@ -129,8 +129,8 @@ internal class MeshPacket(
             val sealed = com.bitaudio.crypto.PacketCrypto.sealPayload(
                 crypto = crypto,
                 channelKey = channelKey,
-                headerWithoutSignature = canonical,
-                payload = plaintext,
+                headerPrefix = canonical,
+                plaintext = plaintext,
             )
             return MeshPacket(
                 messageId = headerPrefix.copyOfRange(2, 10),
