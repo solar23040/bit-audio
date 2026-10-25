@@ -52,3 +52,24 @@ jobs:
             **/build/reports/lint-results-*.html
           if-no-files-found: ignore
           retention-days: 7
+
+  security-harness:
+    name: Security harness self-check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyNaCl
+        run: python -m pip install pynacl
+
+      - name: Run harness self-check
+        working-directory: security/attack-tests
+        run: python selfcheck.py
