@@ -47,7 +47,6 @@ class MeshCryptoPipelineTest {
 
         harness.nodes.getValue("a").send(Peer("b"), packet)
         advanceUntilIdle()
-        println("replay test deliveries=" + harness.deliveries.mapValues { it.value.size } + " raw=" + harness.rawFrames.mapValues { it.value.size })
         assertEquals(1, harness.deliveries.getValue("d").size)
         assertEquals(1, harness.rawFrames.getValue("c").size)
 
@@ -83,7 +82,6 @@ class MeshCryptoPipelineTest {
 
         harness.meshes.getValue("a").publish(harness.channel.channelId, payload)
         advanceUntilIdle()
-        println("three hop deliveries=" + harness.deliveries.mapValues { it.value.size } + " raw=" + harness.rawFrames.mapValues { it.value.size })
 
         // b and c are relays but also channel members, so they deliver locally too.
         assertEquals(1, harness.deliveries.getValue("b").size)
@@ -146,7 +144,9 @@ class MeshCryptoPipelineTest {
                     localPublicKey = cryptos.getValue(id).publicKey,
                     initialChannels = listOf(channel),
                     config = config,
-                    externalScope = scope.backgroundScope,
+                    // Relay jobs run on the foreground test scope so
+                    // advanceUntilIdle() drains every hop.
+                    externalScope = scope,
                 )
             }
 
