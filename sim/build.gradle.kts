@@ -29,6 +29,7 @@ dependencies {
     implementation(project(":transport"))
     implementation(project(":mesh"))
     implementation(project(":crypto"))
+    implementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
