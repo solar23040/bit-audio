@@ -193,6 +193,29 @@ class MeshContractSecurityTest {
     }
 
     @Test
+    fun `decremented relay is accepted at the next hop`() = runTest {
+        val line = line("hop")
+        val frame = buildFrame(
+            signingSeed = aliceSeed,
+            senderId = RotatingSenderId.derive(channelKey, alicePublicKey, NOW_MS / 1000),
+            ttl = 2,
+            msgId = ByteArray(8) { 0x51 },
+            plaintext = "hop".toByteArray(),
+        )
+        // Hand the decremented bytes to the far node, bypassing the relay launch.
+        val relayed = frame.copyOf().also { it[26] = 1 }
+        line.middle.transport.send(Peer(line.far.name), relayed)
+        advanceUntilIdle()
+
+        assertTrue(
+            "far rejected a decremented relay: raw=${line.far.raw} drops=${line.far.dropped}",
+            line.far.delivered.size == 1,
+        )
+        assertArrayEquals("hop".toByteArray(), line.far.delivered.single())
+        assertTrue("far rebroadcast a ttl=1 copy", line.far.relayedTtls.isEmpty())
+    }
+
+    @Test
     fun `ttl zero is dropped and ttl two relays exactly once`() = runTest {
         val line = line("ttl")
 
@@ -218,9 +241,15 @@ class MeshContractSecurityTest {
         )
         line.sender.send(Peer(line.middle.name), one)
         advanceUntilIdle()
-        assertTrue("ttl=1 delivery count", line.middle.delivered.size == 1)
-        assertTrue("ttl=1 relayed", line.middle.relayedTtls.isEmpty())
-        assertTrue("ttl=1 reached the far node", line.far.delivered.isEmpty())
+        assertTrue("ttl=1 delivered", line.middle.delivered.size == 1)
+        assertTrue(
+            "ttl=1 relayed: middle raw=${line.middle.raw} drops=${line.middle.dropped}",
+            line.middle.relayedTtls.isEmpty(),
+        )
+        assertTrue(
+            "ttl=1 reached the far node: far raw=${line.far.raw}",
+            line.far.delivered.isEmpty(),
+        )
 
         val two = buildFrame(
             signingSeed = aliceSeed,
@@ -233,9 +262,17 @@ class MeshContractSecurityTest {
         line.sender.send(Peer(line.middle.name), two)
         advanceUntilIdle()
         assertTrue("ttl=2 delivery count", line.middle.delivered.size == 2)
-        assertTrue("far delivery count", line.far.delivered.size == 1)
+        assertEquals(
+            "relay did not decrement ttl: middle raw=${line.middle.raw} drops=${line.middle.dropped}",
+            listOf(1),
+            line.middle.relayedTtls,
+        )
+        assertTrue(
+            "far delivery count: far raw=${line.far.raw} drops=${line.far.dropped} " +
+                "relayTargets=${line.middle.relayTargets}",
+            line.far.delivered.size == 1,
+        )
         assertArrayEquals("ttl two".toByteArray(), line.far.delivered.single())
-        assertEquals("relay did not decrement ttl", listOf(1), line.middle.relayedTtls)
         assertTrue("far node rebroadcast a ttl=1 copy", line.far.relayedTtls.isEmpty())
     }
 
@@ -244,13 +281,19 @@ class MeshContractSecurityTest {
     private inner class TestNode(
         val name: String,
         private val network: FakeNetwork,
-        private val transport: FakeTransport,
+        val transport: FakeTransport,
         private val roster: List<ByteArray>,
         private val scope: CoroutineScope,
     ) {
         val delivered = mutableListOf<ByteArray>()
         val relayedTtls = mutableListOf<Int>()
         val dropped = mutableListOf<String>()
+
+        /** Every frame that reached this node, for failure diagnostics. */
+        val raw = mutableListOf<String>()
+
+        /** Neighbours chosen for each relay, for failure diagnostics. */
+        val relayTargets = mutableListOf<List<String>>()
         private val seen = mutableSetOf<String>()
         private val counters = mutableMapOf<String, ByteArray>()
         private val nowMs = NOW_MS
@@ -264,7 +307,14 @@ class MeshContractSecurityTest {
         }
 
         private fun onFrame(from: String, frame: ByteArray) {
-            val reason = inspect(from, frame)
+            val ttl = if (frame.size > TTL_OFFSET) frame[TTL_OFFSET].toInt() and 0xFF else -1
+            raw.add("$from/${frame.size}b/ttl=$ttl")
+            // A crash in the reference parser is a finding, not a silent drop.
+            val reason = try {
+                inspect(from, frame)
+            } catch (error: Throwable) {
+                "crash: ${error::class.simpleName}: ${error.message}"
+            }
             if (reason != null) dropped.add(reason)
         }
 
@@ -320,6 +370,8 @@ class MeshContractSecurityTest {
             if (packet.ttl > 1 && nowMs - packet.timestampMs <= FUTURE_SKEW_MS) {
                 val relayed = frame.copyOf().also { it[TTL_OFFSET] = (packet.ttl - 1).toByte() }
                 relayedTtls.add(packet.ttl - 1)
+                val targets = network.snapshot(name).filter { it.id != from }.map { it.id }
+                relayTargets.add(targets)
                 for (peer in network.snapshot(name)) {
                     if (peer.id != from) {
                         scope.launch { transport.send(peer, relayed) }
