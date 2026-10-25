@@ -15,7 +15,6 @@ import com.solar23040.bitaudio.data.SettingsRepository
 import com.solar23040.bitaudio.data.VoiceNote
 import com.solar23040.bitaudio.invite.ChannelIdCodec
 import com.solar23040.bitaudio.invite.ChannelInviteData
-import com.solar23040.bitaudio.transport.BleMeshRuntime
 import com.solar23040.bitaudio.transport.MeshRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -45,10 +44,10 @@ class AppGraph(context: Context) {
     val player = PreviewPlayer()
 
     /**
-     * Real BLE mesh runtime. Nothing else in `:app` constructs transport or mesh
-     * objects directly; the service only sees [MeshRuntime].
+     * Real BLE transport + mesh. Nothing else in `:app` constructs transport or
+     * mesh objects directly; the foreground service only sees [MeshRuntime].
      */
-    val runtime: MeshRuntime = BleMeshRuntime(appContext, channels.channels, scope)
+    val runtime: MeshRuntime = BleMeshRuntime(appContext, channels, scope)
 
     fun createChannel(name: String, alias: String): Channel {
         val key = ChannelIdCodec.randomKey()
