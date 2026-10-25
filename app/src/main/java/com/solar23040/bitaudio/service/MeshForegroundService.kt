@@ -29,8 +29,8 @@ import androidx.core.content.ContextCompat
 /**
  * Keeps BLE/mesh work alive while the app is in the background.
  *
- * The runtime is the real BLE implementation from `:transport` + `:mesh`; the
- * service only depends on the [MeshRuntime] lifecycle contract.
+ * The runtime is [com.solar23040.bitaudio.BleMeshRuntime]; this service only
+ * owns the foreground lifecycle and scan duty-cycle contract.
  */
 class MeshForegroundService : Service() {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
