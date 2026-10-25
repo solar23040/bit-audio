@@ -288,6 +288,7 @@ class MeshEngine(
             } catch (_: Exception) {
                 return@launch
             }
+            println("MESH relay ttl=$ttl ingress=${ingress.id} peers=${neighbours.map { it.id }}")
             for (peer in neighbours) {
                 if (peer.id == ingress.id) continue
                 try {
