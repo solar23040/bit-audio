@@ -29,6 +29,7 @@ kotlin {
 dependencies {
     implementation(project(":transport"))
     implementation(project(":crypto"))
+    implementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
