@@ -9,10 +9,12 @@ import com.bitaudio.crypto.IdentityManager
 import com.meshvoice.transport.BleTransport
 import com.solar23040.bitaudio.data.Channel
 import com.solar23040.bitaudio.mesh.ChannelId
+import com.solar23040.bitaudio.mesh.MeshMessage
 import com.solar23040.bitaudio.mesh.engine.MeshChannel
 import com.solar23040.bitaudio.mesh.engine.MeshEngine
 import com.solar23040.bitaudio.mesh.engine.store.SqliteMeshStore
 import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
@@ -52,6 +54,8 @@ class BleMeshRuntime(
     private var engine: MeshEngine? = null
     private var channelJob: Job? = null
     private var syncedKeys: Map<ChannelId, String> = emptyMap()
+    private val messageListeners = CopyOnWriteArrayList<(MeshMessage) -> Unit>()
+    private val readyListeners = CopyOnWriteArrayList<() -> Unit>()
 
     @Volatile
     private var running = false
@@ -94,8 +98,39 @@ class BleMeshRuntime(
 
             engine = mesh
             syncChannelsLocked(channels.value)
+            mesh.onMessage { message -> fanOut(message) }
             transport.start()
             running = true
+        }
+        notifyReady()
+    }
+
+    override suspend fun publish(channelId: String, payload: ByteArray): Boolean {
+        val active = synchronized(lock) { engine } ?: return false
+        return runCatching {
+            active.publish(ChannelId.fromHex(channelId), payload)
+        }.isSuccess
+    }
+
+    override fun onMessage(callback: (MeshMessage) -> Unit): AutoCloseable {
+        messageListeners.add(callback)
+        return AutoCloseable { messageListeners.remove(callback) }
+    }
+
+    override fun onReady(callback: () -> Unit): AutoCloseable {
+        readyListeners.add(callback)
+        return AutoCloseable { readyListeners.remove(callback) }
+    }
+
+    private fun fanOut(message: MeshMessage) {
+        for (listener in messageListeners) {
+            runCatching { listener(message) }
+        }
+    }
+
+    private fun notifyReady() {
+        for (listener in readyListeners) {
+            runCatching { listener() }
         }
     }
 

@@ -5,6 +5,7 @@ import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Process
 import androidx.annotation.RequiresPermission
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -42,6 +43,9 @@ class VoiceRecorder @JvmOverloads constructor(
     @Volatile
     private var failure: String? = null
 
+    @Volatile
+    private var currentAmplitude = 0f
+
     private var worker: Thread? = null
     private var audioRecord: AudioRecord? = null
     private var buffer: ClipBuffer? = null
@@ -57,6 +61,12 @@ class VoiceRecorder @JvmOverloads constructor(
     /** Last capture error, if any. Cleared on the next [start]. */
     val lastFailure: String? get() = failure
 
+    /**
+     * Normalised 0..1 peak of the most recent 20 ms frame, for a live level meter.
+     * Zero when not recording. Updated by the capture thread; safe to poll from the UI.
+     */
+    val amplitude: Float get() = currentAmplitude
+
     @RequiresPermission(android.Manifest.permission.RECORD_AUDIO)
     fun start() {
         synchronized(lock) {
@@ -71,6 +81,7 @@ class VoiceRecorder @JvmOverloads constructor(
             stopRequested = false
             truncated = false
             failure = null
+            currentAmplitude = 0f
             audioRecord = record
             buffer = clipBuffer
             recording = true
@@ -189,7 +200,10 @@ class VoiceRecorder @JvmOverloads constructor(
                     AudioRecord.READ_NON_BLOCKING,
                 )
                 when {
-                    read > 0 -> clipBuffer.append(chunk, read)
+                    read > 0 -> {
+                        clipBuffer.append(chunk, read)
+                        currentAmplitude = peakOf(chunk, read)
+                    }
                     read == 0 -> Thread.sleep(READ_POLL_MS)
                     read == AudioRecord.ERROR_DEAD_OBJECT -> {
                         throw AudioException("Audio device disconnected")
@@ -215,6 +229,7 @@ class VoiceRecorder @JvmOverloads constructor(
         } catch (t: Throwable) {
             failure = t.message ?: t::class.java.simpleName
         } finally {
+            currentAmplitude = 0f
             try {
                 record.stop()
             } catch (_: IllegalStateException) {
@@ -222,6 +237,15 @@ class VoiceRecorder @JvmOverloads constructor(
             }
             recording = false
         }
+    }
+
+    private fun peakOf(samples: ShortArray, length: Int): Float {
+        var peak = 0
+        for (index in 0 until length) {
+            val magnitude = abs(samples[index].toInt())
+            if (magnitude > peak) peak = magnitude
+        }
+        return (peak / 32768f).coerceIn(0f, 1f)
     }
 
     private companion object {

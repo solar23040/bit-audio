@@ -12,7 +12,7 @@ Agent B owns this module. It captures 16 kHz mono PCM16, encodes 20 ms Opus fram
 | `OpusAudioCodec` | libopus implementation of `AudioCodec`; thread-safe. |
 | `OpusClipCodec` | Whole-clip helper: PCM ⇄ frames, enforces the 15 s cap. |
 | `EncodedAudioClip` | Immutable clip (`frames`, `sampleCount`) and payload serialization. |
-| `VoiceRecorder` | `AudioRecord` hold-to-record with a hard 15 s cap. |
+| `VoiceRecorder` | `AudioRecord` hold-to-record with a hard 15 s cap and a live `amplitude` level. |
 | `ClipPlayer` | `AudioTrack` streaming playback; `stop()` is safe from the UI thread. |
 | `WavFile` | PCM16 WAV read/write for tests and debug export. |
 

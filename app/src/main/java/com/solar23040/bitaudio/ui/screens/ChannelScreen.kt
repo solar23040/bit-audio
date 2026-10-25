@@ -420,7 +420,7 @@ private fun VoiceNoteCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!note.outgoing) {
+                if (!note.outgoing || note.state == NoteState.Delivered) {
                     Spacer(Modifier.weight(1f))
                     Text(
                         text = "${note.hopCount} hop" + if (note.hopCount == 1) "" else "s",
@@ -436,14 +436,14 @@ private fun VoiceNoteCard(
 @Composable
 private fun DeliveryBadge(state: NoteState) {
     val label = when (state) {
-        NoteState.Sending -> "Sending"
         NoteState.Queued -> "Queued"
+        NoteState.Sent -> "Sent"
         NoteState.Delivered -> "Delivered"
         NoteState.Failed -> "Failed"
     }
     val color = when (state) {
-        NoteState.Sending -> MaterialTheme.colorScheme.tertiary
         NoteState.Queued -> MaterialTheme.colorScheme.secondary
+        NoteState.Sent -> MaterialTheme.colorScheme.tertiary
         NoteState.Delivered -> MaterialTheme.colorScheme.primary
         NoteState.Failed -> MaterialTheme.colorScheme.error
     }
