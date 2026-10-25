@@ -15,7 +15,7 @@ class MeshLineTopologyTest {
     @Test
     fun `five node line delivers end to end without loops or duplicates`() = runTest {
         val world = MeshWorld(
-            scope = backgroundScope,
+            testScope = this,
             clock = TestClock(),
             nodeIds = listOf("n0", "n1", "n2", "n3", "n4"),
         )
@@ -55,7 +55,7 @@ class MeshLineTopologyTest {
     @Test
     fun `ring topology delivers once per node without a loop storm`() = runTest {
         val world = MeshWorld(
-            scope = backgroundScope,
+            testScope = this,
             clock = TestClock(),
             nodeIds = listOf("n0", "n1", "n2", "n3", "n4"),
         )
@@ -89,7 +89,7 @@ class MeshLineTopologyTest {
     @Test
     fun `rebroadcast is delayed by the jitter window`() = runTest {
         val world = MeshWorld(
-            scope = backgroundScope,
+            testScope = this,
             clock = TestClock(),
             nodeIds = listOf("n0", "n1", "n2"),
         )

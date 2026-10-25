@@ -12,7 +12,7 @@ class StoreAndForwardTest {
     @Test
     fun `late joining peer receives clips relayed before it appeared`() = runTest {
         val world = MeshWorld(
-            scope = backgroundScope,
+            testScope = this,
             clock = TestClock(),
             nodeIds = listOf("a", "b", "c"),
         )
@@ -41,7 +41,7 @@ class StoreAndForwardTest {
         val clock = TestClock()
         val retentionMs = MeshWorld.DEFAULT_RETENTION_MS
         val world = MeshWorld(
-            scope = backgroundScope,
+            testScope = this,
             clock = clock,
             nodeIds = listOf("a", "b", "c"),
             retentionMs = retentionMs,

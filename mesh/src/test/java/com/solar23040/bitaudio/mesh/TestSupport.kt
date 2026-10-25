@@ -12,6 +12,10 @@ import com.solar23040.bitaudio.mesh.store.InMemoryMeshStore
 import java.util.Collections
 import kotlin.random.Random
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 
 internal class TestClock(var now: Long = 1_700_000_000_000L) {
     fun time(): Long = now
@@ -30,17 +34,27 @@ internal class MeshNode(
 /**
  * In-memory world used by the mesh tests: one [FloodMesh] per node, all
  * sharing a channel key and a full member roster, backed by [FakeNetwork].
+ *
+ * Mesh coroutines deliberately do *not* run on [TestScope.backgroundScope]:
+ * `advanceUntilIdle()` only advances virtual time while foreground events are
+ * queued, so delayed rebroadcasts and peer hand-offs on a background scope
+ * would never be drained. Instead they run on a plain scheduler-bound scope
+ * that the test scheduler treats as foreground work and that [close] cancels.
  */
 internal class MeshWorld(
-    scope: CoroutineScope,
+    testScope: TestScope,
     val clock: TestClock,
     nodeIds: List<String>,
     private val retentionMs: Long = DEFAULT_RETENTION_MS,
     storeFactory: (String) -> InMemoryMeshStore = { InMemoryMeshStore() },
 ) {
+    private val meshScope = CoroutineScope(
+        SupervisorJob() + StandardTestDispatcher(testScope.testScheduler),
+    )
+
     val network = FakeNetwork(
         defaultLink = LinkConfig(lossRate = 0.0, latencyMs = 0L..0L),
-        externalScope = scope,
+        externalScope = meshScope,
     )
 
     val channel: MeshChannel
@@ -70,7 +84,7 @@ internal class MeshWorld(
                     random = Random(id.hashCode()),
                 ),
                 store = store,
-                meshScope = scope,
+                meshScope = meshScope,
             )
             MeshNode(
                 id = id,
@@ -95,6 +109,7 @@ internal class MeshWorld(
             node.mesh.close()
             node.store.close()
         }
+        meshScope.cancel()
     }
 
     companion object {

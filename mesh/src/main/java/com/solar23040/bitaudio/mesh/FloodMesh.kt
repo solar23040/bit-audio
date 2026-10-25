@@ -68,6 +68,14 @@ class FloodMesh(
     private val secureRandom = SecureRandom()
     private val jitterLock = Any()
 
+    /**
+     * Expiry time of messages published on this device, keyed by channel +
+     * msg_id. Store-and-forward never replays them: a freshly published packet
+     * is already flooding at full TTL, and handing a ttl=1 copy to a peer would
+     * deliver it there without the rest of the flood ever starting.
+     */
+    private val ownMessages = ConcurrentHashMap<String, Long>()
+
     private val assembliesLock = Any()
     private val assemblies = LinkedHashMap<AssemblyKey, Assembly>()
 
@@ -161,6 +169,8 @@ class FloodMesh(
         val now = config.clock()
         val msgId = ByteArray(MeshPacket.ID_SIZE).also { secureRandom.nextBytes(it) }
         val messageIdHex = msgId.toHex()
+        pruneOwnMessages(now)
+        ownMessages[ownMessageKey(channel.id, messageIdHex)] = now + config.retentionMs
         val localIdentityHex = localPublicKey.toHex()
         val channelIdBytes = channel.id.toBytes()
         val senderId = RotatingSenderId.derive(
@@ -436,17 +446,9 @@ class FloodMesh(
 
     private suspend fun collectPeers() {
         val known = HashSet<String>()
-        var initialised = false
 
         transport.peers().catch { /* transport shut down: stop watching */ }.collect { peers ->
             val current = peers.map { it.id }.toSet()
-            if (!initialised) {
-                // The first emission is the existing topology, not a discovery.
-                initialised = true
-                known.addAll(current)
-                return@collect
-            }
-
             val added = peers.filter { it.id !in known }
             known.retainAll(current)
             if (added.isEmpty()) return@collect
@@ -464,12 +466,15 @@ class FloodMesh(
 
     private suspend fun replayStored(peers: List<Peer>) {
         val now = config.clock()
+        pruneOwnMessages(now)
         runCatching { packetStore.deleteExpired(now) }
         val stored = runCatching { packetStore.loadUnexpired(now) }.getOrDefault(emptyList())
         if (stored.isEmpty()) return
 
         coroutineScope {
             stored.forEach { packet ->
+                // Our own packets are flooding at full TTL already.
+                if (isOwnMessage(packet)) return@forEach
                 val frame = staleFrame(packet.frame) ?: return@forEach
                 peers.forEach { peer ->
                     launch {
@@ -479,6 +484,16 @@ class FloodMesh(
             }
         }
     }
+
+    private fun isOwnMessage(packet: StoredPacket): Boolean =
+        ownMessages[ownMessageKey(packet.channel, packet.messageId)] != null
+
+    private fun pruneOwnMessages(now: Long) {
+        ownMessages.entries.removeAll { entry -> entry.value <= now }
+    }
+
+    private fun ownMessageKey(channel: ChannelId, messageIdHex: String): String =
+        "${channel.hex}:$messageIdHex"
 
     /**
      * Replayed packets keep their signature, timestamp and counter but travel
