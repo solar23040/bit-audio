@@ -2,6 +2,7 @@
 
 Every mutation is expected to be rejected or silently dropped by the target.
 A mutation that still gets delivered after authentication is a finding.
+Offsets follow ``docs/packet-format.md`` v1 (43-byte prefix, 107-byte header).
 """
 
 from __future__ import annotations
@@ -10,7 +11,9 @@ import random
 from dataclasses import replace
 from typing import Callable
 
-from wire import Packet, PacketError, parse_packet
+from wire import HEADER_LEN, SIG_LEN, SIG_OFFSET, Packet, PacketError, parse_packet
+
+TTL_ONLY_MUTATIONS = frozenset({"bump_ttl", "zero_ttl", "max_ttl"})
 
 
 def _with(frame: bytes, **changes: object) -> bytes:
@@ -19,9 +22,9 @@ def _with(frame: bytes, **changes: object) -> bytes:
 
 
 def flip_payload_bit(frame: bytes, rng: random.Random) -> bytes:
-    if len(frame) <= 95:
+    if len(frame) <= HEADER_LEN:
         return frame + bytes([rng.randrange(256)])
-    index = rng.randrange(95, len(frame))
+    index = rng.randrange(HEADER_LEN, len(frame))
     data = bytearray(frame)
     data[index] ^= 1 << rng.randrange(8)
     return bytes(data)
@@ -29,14 +32,21 @@ def flip_payload_bit(frame: bytes, rng: random.Random) -> bytes:
 
 def flip_sig_bit(frame: bytes, rng: random.Random) -> bytes:
     data = bytearray(frame)
-    index = rng.randrange(31, 95)
+    index = rng.randrange(SIG_OFFSET, SIG_OFFSET + SIG_LEN)
+    data[index] ^= 1 << rng.randrange(8)
+    return bytes(data)
+
+
+def flip_channel_bit(frame: bytes, rng: random.Random) -> bytes:
+    data = bytearray(frame)
+    index = rng.randrange(10, 18)
     data[index] ^= 1 << rng.randrange(8)
     return bytes(data)
 
 
 def flip_sender_bit(frame: bytes, rng: random.Random) -> bytes:
     data = bytearray(frame)
-    index = rng.randrange(10, 18)
+    index = rng.randrange(18, 26)
     data[index] ^= 1 << rng.randrange(8)
     return bytes(data)
 
@@ -48,11 +58,25 @@ def flip_msgid_bit(frame: bytes, rng: random.Random) -> bytes:
     return bytes(data)
 
 
+def flip_counter_bit(frame: bytes, rng: random.Random) -> bytes:
+    data = bytearray(frame)
+    index = rng.randrange(39, 43)
+    data[index] ^= 1 << rng.randrange(8)
+    return bytes(data)
+
+
+def flip_timestamp_bit(frame: bytes, rng: random.Random) -> bytes:
+    data = bytearray(frame)
+    index = rng.randrange(31, 39)
+    data[index] ^= 1 << rng.randrange(8)
+    return bytes(data)
+
+
 def flip_nonce_bit(frame: bytes, rng: random.Random) -> bytes:
-    if len(frame) <= 95:
+    if len(frame) <= HEADER_LEN:
         return frame
     data = bytearray(frame)
-    index = rng.randrange(95, min(119, len(frame)))
+    index = rng.randrange(HEADER_LEN, min(HEADER_LEN + 24, len(frame)))
     data[index] ^= 1 << rng.randrange(8)
     return bytes(data)
 
@@ -100,20 +124,20 @@ def type_random(frame: bytes, rng: random.Random) -> bytes:
 
 
 def ts_zero(frame: bytes, _rng: random.Random) -> bytes:
-    return _with(frame, ts_ms=0)
+    return _with(frame, timestamp_ms=0)
 
 
 def ts_future(frame: bytes, _rng: random.Random) -> bytes:
     packet = parse_packet(frame)
-    return _with(frame, ts_ms=packet.ts_ms + 365 * 24 * 3600 * 1000)
+    return _with(frame, timestamp_ms=packet.timestamp_ms + 365 * 24 * 3600 * 1000)
 
 
 def clear_sig(frame: bytes, _rng: random.Random) -> bytes:
-    return _with(frame, sig=bytes(64))
+    return _with(frame, signature=bytes(64))
 
 
 def truncate_header(frame: bytes, _rng: random.Random) -> bytes:
-    return frame[:31]
+    return frame[:43]
 
 
 def truncate_mid_header(frame: bytes, _rng: random.Random) -> bytes:
@@ -121,11 +145,11 @@ def truncate_mid_header(frame: bytes, _rng: random.Random) -> bytes:
 
 
 def truncate_below_min(frame: bytes, _rng: random.Random) -> bytes:
-    return frame[:94]
+    return frame[:106]
 
 
 def empty_payload(frame: bytes, _rng: random.Random) -> bytes:
-    return frame[:95]
+    return frame[:HEADER_LEN]
 
 
 def append_garbage(frame: bytes, rng: random.Random) -> bytes:
@@ -137,7 +161,7 @@ def oversize(frame: bytes, rng: random.Random) -> bytes:
 
 
 def corrupt_tag(frame: bytes, rng: random.Random) -> bytes:
-    if len(frame) <= 95:
+    if len(frame) <= HEADER_LEN:
         return frame
     data = bytearray(frame)
     data[-1] ^= 1 << rng.randrange(8)
@@ -147,8 +171,11 @@ def corrupt_tag(frame: bytes, rng: random.Random) -> bytes:
 MUTATIONS: dict[str, Callable[[bytes, random.Random], bytes]] = {
     "flip_payload_bit": flip_payload_bit,
     "flip_sig_bit": flip_sig_bit,
+    "flip_channel_bit": flip_channel_bit,
     "flip_sender_bit": flip_sender_bit,
     "flip_msgid_bit": flip_msgid_bit,
+    "flip_counter_bit": flip_counter_bit,
+    "flip_timestamp_bit": flip_timestamp_bit,
     "flip_nonce_bit": flip_nonce_bit,
     "bump_ttl": bump_ttl,
     "zero_ttl": zero_ttl,
@@ -173,30 +200,33 @@ MUTATIONS: dict[str, Callable[[bytes, random.Random], bytes]] = {
 }
 
 EXPECTATIONS: dict[str, str] = {
-    "flip_payload_bit": "AEAD + signature reject",
+    "flip_payload_bit": "signature + AEAD reject",
     "flip_sig_bit": "signature reject",
+    "flip_channel_bit": "signature reject (channel_id is signed)",
     "flip_sender_bit": "signature/identity reject",
     "flip_msgid_bit": "signature reject (msg_id is signed)",
-    "flip_nonce_bit": "AEAD reject",
-    "bump_ttl": "signature reject (ttl is signed)",
-    "zero_ttl": "signature reject; if unsigned path exists, no relay",
-    "max_ttl": "signature reject; ttl clamp if unsigned path exists",
-    "chunk_idx_oob": "signature reject + structural reject",
-    "chunk_idx_wrap": "signature reject + structural reject",
-    "total_zero": "signature/structural reject",
-    "total_huge": "signature reject + chunk cap",
+    "flip_counter_bit": "signature reject (counter is signed)",
+    "flip_timestamp_bit": "signature reject (timestamp is signed)",
+    "flip_nonce_bit": "signature + AEAD reject",
+    "bump_ttl": "still verifies (TTL is unsigned); accepted while 1..8, never amplified",
+    "zero_ttl": "structural reject (TTL 0)",
+    "max_ttl": "structural reject (TTL > 8)",
+    "chunk_idx_oob": "structural reject (signature would also fail)",
+    "chunk_idx_wrap": "structural reject (signature would also fail)",
+    "total_zero": "structural reject (total_chunks 0)",
+    "total_huge": "structural reject (total_chunks > 256)",
     "version_zero": "structural reject",
     "version_255": "structural reject",
-    "type_random": "signature reject",
+    "type_random": "signature reject for known types; unknown types ignored",
     "ts_zero": "signature reject; replay window reject",
-    "ts_future": "signature reject; replay window reject",
+    "ts_future": "signature reject; future-window reject",
     "clear_sig": "signature reject",
     "truncate_header": "structural reject",
     "truncate_mid_header": "structural reject",
     "truncate_below_min": "structural reject",
-    "empty_payload": "AEAD reject",
-    "append_garbage": "signature/AEAD reject or ignore trailing bytes",
-    "oversize": "frame-size cap",
+    "empty_payload": "structural reject (sealed chunk < 40 B)",
+    "append_garbage": "signature/AEAD reject or frame-size cap",
+    "oversize": "frame-size cap (> 512 B)",
     "corrupt_tag": "AEAD reject",
 }
 

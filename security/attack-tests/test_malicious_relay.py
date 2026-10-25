@@ -44,6 +44,7 @@ from wire import (
     frame_summary,
     from_hex,
     hexs,
+    now_ms,
     parse_packet,
     sender_id_for_pubkey,
 )
@@ -52,7 +53,7 @@ from wire import (
 def _verifies(frame: bytes, pubkey: bytes) -> bool:
     try:
         packet = parse_packet(frame)
-        VerifyKey(pubkey).verify(packet.signing_input, packet.sig)
+        VerifyKey(pubkey).verify(packet.signing_input, packet.signature)
         return True
     except (BadSignatureError, ValueError):
         return False
@@ -87,7 +88,11 @@ async def run(args: argparse.Namespace) -> int:
         baseline_expected = "unclear (captured replay; depends on anti-replay)"
     else:
         signing_key, pubkey = identity_from_config(cfg)
-        sender_id = from_hex(args.sender_id_hex) if args.sender_id_hex else sender_id_for_pubkey(pubkey)
+        sender_id = (
+            from_hex(args.sender_id_hex)
+            if args.sender_id_hex
+            else sender_id_for_pubkey(cfg.channel_key, pubkey, now_ms())
+        )
         if len(sender_id) != 8:
             raise SystemExit("--sender-id-hex must be 8 bytes")
         msg_id, base_frames = build_voice_message(
