@@ -27,84 +27,97 @@ class MeshStoreForwardTest {
     @Test
     fun `15 KB clip is split into frames of at most 512 bytes and reassembles`() = runTest {
         val harness = Harness(this, listOf("a", "b"))
-        harness.network.connect("a", "b")
-        advanceUntilIdle()
-        val payload = ByteArray(15 * 1024) { index -> (index * 37 and 0xFF).toByte() }
+        try {
+            harness.network.connect("a", "b")
+            advanceUntilIdle()
+            val payload = ByteArray(15 * 1024) { index -> (index * 37 and 0xFF).toByte() }
 
-        harness.meshes.getValue("a").publish(harness.channel.channelId, payload)
-        advanceUntilIdle()
+            harness.meshes.getValue("a").publish(harness.channel.channelId, payload)
+            advanceUntilIdle()
 
-        val expectedChunks =
-            (payload.size + MeshPacketCodec.MAX_CHUNK_PLAINTEXT - 1) /
-                MeshPacketCodec.MAX_CHUNK_PLAINTEXT
-        val frames = harness.rawFrames.getValue("b")
-        assertEquals(expectedChunks, frames.size)
-        assertTrue(frames.all { it.size in 107..MeshPacketCodec.MAX_PACKET_SIZE })
-        assertEquals(MeshPacketCodec.MAX_PACKET_SIZE, frames.maxOf { it.size })
+            val expectedChunks =
+                (payload.size + MeshPacketCodec.MAX_CHUNK_PLAINTEXT - 1) /
+                    MeshPacketCodec.MAX_CHUNK_PLAINTEXT
+            val frames = harness.rawFrames.getValue("b")
+            assertEquals(expectedChunks, frames.size)
+            assertTrue(frames.all { it.size in 107..MeshPacketCodec.MAX_PACKET_SIZE })
+            assertEquals(MeshPacketCodec.MAX_PACKET_SIZE, frames.maxOf { it.size })
 
-        val delivered = harness.deliveries.getValue("b").single()
-        assertArrayEquals(payload, delivered.payload)
-        assertEquals(expectedChunks, harness.stores.getValue("a").size())
-        assertEquals(expectedChunks, harness.stores.getValue("b").size())
+            val delivered = harness.deliveries.getValue("b").single()
+            assertArrayEquals(payload, delivered.payload)
+            assertEquals(expectedChunks, harness.stores.getValue("a").size())
+            assertEquals(expectedChunks, harness.stores.getValue("b").size())
+        } finally {
+            harness.closeAll()
+        }
     }
 
     @Test
     fun `offline publish is handed off when a neighbour appears and does not flood`() = runTest {
         val harness = Harness(this, listOf("a", "b", "c"))
-        // a is isolated; b can reach c.
-        harness.network.connect("b", "c")
-        advanceUntilIdle()
-        val payload = ByteArray(15 * 1024) { index -> (index * 11 and 0xFF).toByte() }
-        val expectedChunks =
-            (payload.size + MeshPacketCodec.MAX_CHUNK_PLAINTEXT - 1) /
-                MeshPacketCodec.MAX_CHUNK_PLAINTEXT
+        try {
+            // a is isolated; b can reach c.
+            harness.network.connect("b", "c")
+            advanceUntilIdle()
+            val payload = ByteArray(15 * 1024) { index -> (index * 11 and 0xFF).toByte() }
+            val expectedChunks =
+                (payload.size + MeshPacketCodec.MAX_CHUNK_PLAINTEXT - 1) /
+                    MeshPacketCodec.MAX_CHUNK_PLAINTEXT
 
-        harness.meshes.getValue("a").publish(harness.channel.channelId, payload)
-        advanceUntilIdle()
+            harness.meshes.getValue("a").publish(harness.channel.channelId, payload)
+            advanceUntilIdle()
 
-        assertEquals(expectedChunks, harness.stores.getValue("a").size())
-        assertTrue(harness.deliveries.getValue("b").isEmpty())
-        assertTrue(harness.deliveries.getValue("c").isEmpty())
+            assertEquals(expectedChunks, harness.stores.getValue("a").size())
+            assertTrue(harness.deliveries.getValue("b").isEmpty())
+            assertTrue(harness.deliveries.getValue("c").isEmpty())
 
-        harness.network.connect("a", "b")
-        advanceUntilIdle()
+            harness.network.connect("a", "b")
+            advanceUntilIdle()
 
-        val delivered = harness.deliveries.getValue("b").single()
-        assertArrayEquals(payload, delivered.payload)
-        // Replay is handed off with TTL 1, so b delivers locally but does not
-        // relay to c, and stored frames were re-verified before sending.
-        assertTrue(harness.rawFrames.getValue("c").isEmpty())
-        assertTrue(harness.deliveries.getValue("c").isEmpty())
-        assertTrue(
-            harness.rawFrames.getValue("b").all { frame ->
-                MeshPacketCodec.decode(frame)?.header?.ttl == 1
-            },
-        )
-        assertEquals(expectedChunks, harness.stores.getValue("b").size())
+            val delivered = harness.deliveries.getValue("b").single()
+            assertArrayEquals(payload, delivered.payload)
+            // Replay is handed off with TTL 1, so b delivers locally but does not
+            // relay to c, and stored frames were re-verified before sending.
+            assertTrue(harness.rawFrames.getValue("c").isEmpty())
+            assertTrue(harness.deliveries.getValue("c").isEmpty())
+            assertTrue(
+                harness.rawFrames.getValue("b").all { frame ->
+                    MeshPacketCodec.decode(frame)?.header?.ttl == 1
+                },
+            )
+            assertEquals(expectedChunks, harness.stores.getValue("b").size())
+        } finally {
+            harness.closeAll()
+        }
     }
 
     @Test
     fun `persisted counter keeps increasing across engine restarts`() = runTest {
         val harness = Harness(this, listOf("a"))
-        val store = harness.stores.getValue("a")
-        val first = harness.meshes.getValue("a")
-        first.publish(harness.channel.channelId, ByteArray(32) { 1 })
-        advanceUntilIdle()
+        try {
+            val store = harness.stores.getValue("a")
+            val first = harness.meshes.getValue("a")
+            first.publish(harness.channel.channelId, ByteArray(32) { 1 })
+            advanceUntilIdle()
 
-        val firstFrame = store.loadUnexpired(System.currentTimeMillis()).single()
-        val firstCounter = requireNotNull(MeshPacketCodec.decode(firstFrame.frame)).header.counter
-        first.close()
+            val firstFrame = store.loadUnexpired(System.currentTimeMillis()).single()
+            val firstCounter =
+                requireNotNull(MeshPacketCodec.decode(firstFrame.frame)).header.counter
+            first.close()
 
-        val second = harness.newEngine("a")
-        second.publish(harness.channel.channelId, ByteArray(32) { 2 })
-        advanceUntilIdle()
+            val second = harness.newEngine("a")
+            second.publish(harness.channel.channelId, ByteArray(32) { 2 })
+            advanceUntilIdle()
 
-        val secondFrame = store.loadUnexpired(System.currentTimeMillis())
-            .single { it.messageId != firstFrame.messageId }
-        val secondCounter =
-            requireNotNull(MeshPacketCodec.decode(secondFrame.frame)).header.counter
-        assertEquals(firstCounter + 1, secondCounter)
-        second.close()
+            val secondFrame = store.loadUnexpired(System.currentTimeMillis())
+                .single { it.messageId != firstFrame.messageId }
+            val secondCounter =
+                requireNotNull(MeshPacketCodec.decode(secondFrame.frame)).header.counter
+            assertEquals(firstCounter + 1, secondCounter)
+            second.close()
+        } finally {
+            harness.closeAll()
+        }
     }
 
     private class Harness(private val testScope: TestScope, ids: List<String>) {
@@ -146,8 +159,12 @@ class MeshStoreForwardTest {
                 perSenderRate = RateLimit(perSecond = 10_000.0, burst = 20_000.0),
                 perNeighbourRate = RateLimit(perSecond = 10_000.0, burst = 20_000.0),
             ),
-            externalScope = testScope.backgroundScope,
+            externalScope = testScope,
             store = stores.getValue(id),
         )
+
+        fun closeAll() {
+            meshes.values.forEach { it.close() }
+        }
     }
 }
