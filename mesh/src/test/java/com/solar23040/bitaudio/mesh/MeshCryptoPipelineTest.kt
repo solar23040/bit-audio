@@ -144,7 +144,9 @@ class MeshCryptoPipelineTest {
                     localPublicKey = cryptos.getValue(id).publicKey,
                     initialChannels = listOf(channel),
                     config = config,
-                    externalScope = scope.backgroundScope,
+                    // Relay jobs run on the foreground test scope so
+                    // advanceUntilIdle() drains every hop.
+                    externalScope = scope,
                 )
             }
 
