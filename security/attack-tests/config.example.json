@@ -12,9 +12,9 @@
     "service_uuid": null,
     "mtu": 247
   },
-  "sim_out": "../sim/inbox.jsonl",
+  "sim_out": "captures/sim-inbox.jsonl",
   "limits": {
     "max_pps": 50,
-    "max_frames": 2000
+    "max_frames": 100000
   }
 }

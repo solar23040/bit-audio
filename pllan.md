@@ -40,15 +40,15 @@ Push-to-talk voice clips over a BLE mesh on Android. Opus-compressed, signed, en
 Blocks everything else.
 
 **Agent A**
-- [ ] Create Android multi-module project: `:app :audio :transport :mesh :crypto :sim`
-- [ ] Write `/docs/interfaces.md` with Kotlin interfaces:
+- [x] Create Android multi-module project: `:app :audio :transport :mesh :crypto :sim`
+- [x] Write `/docs/interfaces.md` with Kotlin interfaces:
   - `AudioCodec { encode(pcm): ByteArray; decode(bytes): ShortArray }`
   - `Transport { send(peer, bytes); onReceive(cb); peers(): Flow<Peer> }`
   - `Mesh { publish(channel, payload); onMessage(cb) }`
   - `Crypto { sign; verify; seal; open }`
-- [ ] Write `/docs/packet-format.md` (header: `version, type, msg_id(8B), sender_id(8B), ttl, chunk_idx, total_chunks, ts, sig`)
-- [ ] Set up cloud CI on GitHub Actions (lint + unit tests + `assembleDebug` + APK artifact upload on every push). This is the only place anything gets compiled.
-- [ ] Build `FakeTransport` (in-memory, configurable loss/latency) so other agents can work without hardware
+- [x] Write `/docs/packet-format.md` (header: `version, type, msg_id(8B), sender_id(8B), ttl, chunk_idx, total_chunks, ts, sig`)
+- [x] Set up cloud CI on GitHub Actions (lint + unit tests + `assembleDebug` + APK artifact upload on every push). This is the only place anything gets compiled.
+- [x] Build `FakeTransport` (in-memory, configurable loss/latency) so other agents can work without hardware
 
 **Acceptance:** project builds, interfaces compile, fakes exist.
 
@@ -59,44 +59,44 @@ Blocks everything else.
 All code against interfaces/fakes. No inter-dependencies.
 
 ### Agent B: Audio
-- [ ] Hold-to-record via `AudioRecord` (16 kHz mono PCM16)
-- [ ] Opus encode (12 kbps, 20 ms frames) via libopus JNI wrapper
-- [ ] Decode + `AudioTrack` playback
-- [ ] Hard cap 15s per clip
+- [x] Hold-to-record via `AudioRecord` (16 kHz mono PCM16)
+- [x] Opus encode (12 kbps, 20 ms frames) via libopus JNI wrapper
+- [x] Decode + `AudioTrack` playback
+- [x] Hard cap 15s per clip
 
 **Done when:** 10s clip round-trips, is intelligible, and encodes to under ~20 KB. Unit test round-trips a sample WAV.
 
 ### Agent C: Transport
-- [ ] BLE advertise + scan with a custom service UUID
-- [ ] GATT server + client, request MTU 247, write-without-response
-- [ ] Fragmenter: split payload into ~240B chunks with sequence numbers
-- [ ] Reassembler with timeout
-- [ ] Selective ack / retransmit for missing chunks
+- [x] BLE advertise + scan with a custom service UUID
+- [x] GATT server + client, request MTU 247, write-without-response
+- [x] Fragmenter: split payload into ~240B chunks with sequence numbers
+- [x] Reassembler with timeout
+- [x] Selective ack / retransmit for missing chunks
 
 **Done when:** two phones transfer a 15 KB blob intact with 10% simulated loss.
 
 ### Agent D: Mesh
-- [ ] Packet encode/decode per spec
-- [ ] TTL flooding (default TTL 5)
-- [ ] Seen-ID dedup cache (LRU + expiry)
-- [ ] Jittered rebroadcast (random 20-200 ms)
-- [ ] Store-and-forward: persist undelivered clips in Room/SQLite, hand off on new peer discovery, expire after N hours
+- [x] Packet encode/decode per spec
+- [x] TTL flooding (default TTL 5)
+- [x] Seen-ID dedup cache (LRU + expiry)
+- [x] Jittered rebroadcast (random 20-200 ms)
+- [x] Store-and-forward: persist undelivered clips in Room/SQLite, hand off on new peer discovery, expire after N hours
 
 **Done when:** in-memory 5-node line delivers end-to-end on `FakeTransport`; no loops; no duplicate deliveries.
 
 ### Agent E: Crypto
-- [ ] Ed25519 identity keypair per install (Android Keystore where possible)
-- [ ] Packet signing/verification
-- [ ] Channel key from QR/passphrase (Argon2id to 32B), XChaCha20-Poly1305 AEAD for payloads
-- [ ] Anti-replay: timestamp window + per-sender monotonic counter cache
-- [ ] Rotating ephemeral sender IDs
+- [x] Ed25519 identity keypair per install (Android Keystore where possible)
+- [x] Packet signing/verification
+- [x] Channel key from QR/passphrase (Argon2id to 32B), XChaCha20-Poly1305 AEAD for payloads
+- [x] Anti-replay: timestamp window + per-sender monotonic counter cache
+- [x] Rotating ephemeral sender IDs
 
 **Done when:** tampered packets rejected, replays rejected, wrong-key payloads fail to open, test vectors pass.
 
 ### Agent G: Simulator
-- [ ] N-node mesh simulator: configurable topology, loss, latency, malicious nodes
-- [ ] Metrics: delivery rate, hops, latency, duplicate ratio, airtime
-- [ ] Output CSV / simple graph of message spread
+- [x] N-node mesh simulator: configurable topology, loss, latency, malicious nodes
+- [x] Metrics: delivery rate, hops, latency, duplicate ratio, airtime
+- [x] Output CSV / simple graph of message spread
 
 **Done when:** runs 50-100 nodes and outputs metrics Agent D can use for tuning.
 
@@ -122,11 +122,11 @@ Mostly sequential steps.
 ## Phase 3: App shell + UX (Agent F, parallel with Phase 2 once interfaces are stable)
 
 **Agent F**
-- [ ] Foreground service holding BLE (needed for background reliability)
-- [ ] Screens: channel list, create/join channel via QR, channel view with voice-note list (waveform, sender alias, hop count, delivery state), big hold-to-talk button
-- [ ] Permissions flow (BLUETOOTH_SCAN/ADVERTISE/CONNECT, mic, notifications)
-- [ ] Scan duty-cycling for battery
-- [ ] Settings: TTL, retention, rotate identity
+- [x] Foreground service holding BLE (needed for background reliability)
+- [x] Screens: channel list, create/join channel via QR, channel view with voice-note list (waveform, sender alias, hop count, delivery state), big hold-to-talk button
+- [x] Permissions flow (BLUETOOTH_SCAN/ADVERTISE/CONNECT, mic, notifications)
+- [x] Scan duty-cycling for battery
+- [x] Settings: TTL, retention, rotate identity
 
 **Acceptance:** someone new can install, join a channel via QR, and send/play a clip with no instructions.
 
@@ -151,15 +151,15 @@ Needs 3+ phones.
 ## Phase 5: Security pass (Agent H, parallel with Phase 4)
 
 **Agent H**
-- [ ] `/security/threat-model.md`: assets, adversaries (passive sniffer, active spoofer, malicious relay, flooder), STRIDE table, trust boundaries
-- [ ] Attack tests (scripts using `bleak` / ESP32 / second adapter):
+- [x] `/security/threat-model.md`: assets, adversaries (passive sniffer, active spoofer, malicious relay, flooder), STRIDE table, trust boundaries
+- [x] Attack tests (scripts using `bleak` / ESP32 / second adapter):
   - Spoofing: forged sender, expect reject
   - Replay: capture and rebroadcast later, expect reject
   - Flood/DoS: high-rate packets, expect rate limiting
   - Metadata leaks: stable device IDs, advertisement fingerprinting, MAC rotation
   - Fuzzing: chunk index overflow, huge `total_chunks`, truncated headers
   - Malicious relay: drops/modifies packets, expect detection via signature
-- [ ] `/security/findings.md`: severity, repro steps, fix status
+- [x] `/security/findings.md`: severity, repro steps, fix status
 
 **Agents D + E** (support): fix findings; Agent H re-runs until clean.
 

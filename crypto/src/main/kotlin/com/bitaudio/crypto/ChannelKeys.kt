@@ -36,7 +36,7 @@ class Argon2Params(
 object ChannelKeys {
 
     const val KEY_SIZE = 32
-    const val MIN_SALT_SIZE = 8
+    const val MIN_SALT_SIZE = 16
     const val SALT_SIZE = 16
     const val CHANNEL_ID_SIZE = 8
 
@@ -55,6 +55,8 @@ object ChannelKeys {
     /**
      * Derives a channel key from a shared passphrase.
      * The caller owns [passphrase] and should clear it after calling this.
+     * [salt] must be at least [MIN_SALT_SIZE] bytes (16 recommended) and is
+     * normally the random salt carried by the invite.
      */
     fun fromPassphrase(
         passphrase: CharArray,
@@ -82,7 +84,10 @@ object ChannelKeys {
         return key
     }
 
-    /** Stable short channel identifier for UI/logs (does not reveal the key). */
+    /**
+     * Stable short channel identifier for UI/logs (does not reveal the key):
+     * `SHA-256("bit-audio/channel-id/v1" || channel_key)[0..8]`.
+     */
     fun channelId(channelKey: ByteArray): ByteArray {
         require(channelKey.size == KEY_SIZE) { "channel key must be $KEY_SIZE bytes" }
         val digest = java.security.MessageDigest.getInstance("SHA-256")

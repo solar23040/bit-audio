@@ -1,150 +1,195 @@
 package com.bitaudio.crypto
 
-/** Result of inspecting an incoming packet's timestamp/ID/counter. */
+/** Result of inspecting a received message's timestamp, ID and counter. */
 enum class ReplayVerdict {
-    /** First time seen and inside the timestamp window: process it. */
+    /** Not seen before, inside the retention window: process it. */
     ACCEPT,
 
-    /** Message ID or replay counter already seen. */
+    /** This message ID was already accepted. */
     REPLAY,
 
-    /** Timestamp too old for the accepted window. */
-    STALE,
+    /** Timestamp older than the retention window. */
+    EXPIRED,
 
     /** Timestamp too far in the future (clock skew or forged header). */
     FUTURE,
+
+    /** Counter already maps to a different message ID for this identity/channel. */
+    COUNTER_REUSED,
+
+    /** Counter outside the u32 range, or malformed channel/identity input. */
+    INVALID,
 }
 
 /**
- * Anti-replay state for the mesh layer.
+ * Replay detection for received messages, following the rules in
+ * `docs/packet-format.md`:
  *
- * Three independent checks:
- *  1. Timestamp window (default +/-120 s). Store-and-forward content must be
- *     timestamped/expired by `:mesh`; a clip older than the window is rejected
- *     here by design.
- *  2. Per-message ID cache per sender (FIFO, bounded) — cheap duplicate drop.
- *  3. Optional per-sender sliding counter window (64 bits), so packets that
- *     arrive out of order still pass while replays inside the window fail.
+ *  - reject timestamps more than [futureSkewSeconds] in the future;
+ *  - reject messages older than [retentionSeconds];
+ *  - cache completed messages by `(channel_id, resolved identity, msg_id)`;
+ *  - cache `(channel_id, resolved identity, counter) -> msg_id` and reject a
+ *    counter reused for a different message;
+ *  - do **not** apply a monotonic "counter must increase" rule: store-and-forward
+ *    and mesh reordering legitimately deliver older counters, so a late message
+ *    with an unseen ID and a valid timestamp is accepted.
  *
- * The current packet format has no replay-counter field, so `counter` is null
- * until Agent A adds one. Timestamp + message-ID already rejects replays of
- * captured packets; the counter closes the gap for packets with equal `ts`.
+ * Key by the **resolved identity** (stable Ed25519 public key), never by the
+ * rotating `sender_id`; otherwise a new epoch resets the cache.
  *
- * Thread-safe. Keyed by the (possibly rotating) 8-byte sender ID.
+ * The cache is bounded ([maxMessagesPerSender], [maxSenders]); entries evicted
+ * early can be replayed. Mesh still owns persistence and its own dedup keys.
+ * All methods are thread-safe.
  */
 class ReplayGuard(
-    private val timestampWindowSeconds: Long = 120,
-    private val maxSeenIdsPerSender: Int = 2048,
-    private val maxSenders: Int = 1024,
+    private val retentionSeconds: Long = 24 * 60 * 60,
+    private val futureSkewSeconds: Long = 120,
+    private val staleForRelaySeconds: Long = 120,
+    private val maxMessagesPerSender: Int = 8192,
+    private val maxSenders: Int = 256,
     private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
 
     init {
-        require(timestampWindowSeconds > 0) { "timestampWindowSeconds must be > 0" }
-        require(maxSeenIdsPerSender >= 1) { "maxSeenIdsPerSender must be >= 1" }
+        require(retentionSeconds > 0) { "retentionSeconds must be > 0" }
+        require(futureSkewSeconds >= 0) { "futureSkewSeconds must be >= 0" }
+        require(staleForRelaySeconds >= 0) { "staleForRelaySeconds must be >= 0" }
+        require(maxMessagesPerSender >= 1) { "maxMessagesPerSender must be >= 1" }
         require(maxSenders >= 1) { "maxSenders must be >= 1" }
     }
 
-    // Access-order map: least recently used sender is evicted first.
-    private val senders = LinkedHashMap<Long, SenderState>(16, 0.75f, true)
+    // Access-order map of (channel, identity) -> state; least recently used is
+    // evicted when a malicious sender floods channel identities.
+    private val senders = LinkedHashMap<String, SenderState>(16, 0.75f, true)
 
     fun check(
-        senderId: ByteArray,
+        channelId: ByteArray,
+        identityPublicKey: ByteArray,
         messageId: Long,
-        timestampSeconds: Long,
-        counter: Long? = null,
+        counter: Long,
+        timestampMs: Long,
     ): ReplayVerdict {
-        require(senderId.size == ID_SIZE) { "sender ID must be $ID_SIZE bytes" }
+        if (channelId.size != CHANNEL_ID_SIZE ||
+            identityPublicKey.size != Ed25519.PUBLIC_KEY_SIZE ||
+            counter < 1 ||
+            counter > MAX_COUNTER
+        ) {
+            return ReplayVerdict.INVALID
+        }
 
-        val nowSeconds = clock() / 1000L
-        if (timestampSeconds > nowSeconds + timestampWindowSeconds) return ReplayVerdict.FUTURE
-        if (timestampSeconds < nowSeconds - timestampWindowSeconds) return ReplayVerdict.STALE
+        val nowMs = clock()
+        if (timestampMs > nowMs + futureSkewSeconds * 1000L) return ReplayVerdict.FUTURE
+        if (timestampMs < nowMs - retentionSeconds * 1000L) return ReplayVerdict.EXPIRED
 
         return synchronized(this) {
-            val key = senderId.toLongKey()
+            val key = cacheKey(channelId, identityPublicKey)
             val state = senders.getOrPut(key) { SenderState() }
-            while (senders.size > maxSenders) {
-                val oldest = senders.keys.iterator()
-                if (!oldest.hasNext()) break
-                oldest.next()
-                oldest.remove()
+            evictSenders()
+            prune(state, nowMs)
+
+            if (state.messages.containsKey(messageId)) {
+                return@synchronized ReplayVerdict.REPLAY
             }
 
-            when {
-                state.seen.containsKey(messageId) -> ReplayVerdict.REPLAY
-                counter != null && !recordCounter(state, counter) -> ReplayVerdict.REPLAY
-                else -> {
-                    recordSeen(state, messageId)
-                    ReplayVerdict.ACCEPT
+            val counterOwner = state.counterToMessage[counter]
+            if (counterOwner != null) {
+                return@synchronized if (counterOwner == messageId) {
+                    ReplayVerdict.REPLAY
+                } else {
+                    ReplayVerdict.COUNTER_REUSED
                 }
             }
+
+            state.messages[messageId] = MessageRecord(messageId, counter, timestampMs)
+            state.counterToMessage[counter] = messageId
+            if (counter > state.highestCounter) state.highestCounter = counter
+            enforceBound(state)
+            ReplayVerdict.ACCEPT
         }
     }
 
-    /** Drops cached state for a sender, e.g. after its identity rotates. */
-    fun forget(senderId: ByteArray) {
-        require(senderId.size == ID_SIZE) { "sender ID must be $ID_SIZE bytes" }
+    /**
+     * True when a packet is too old to rebroadcast (default 120 s). Mesh still
+     * delivers such packets locally; store-and-forward uses this to stop old
+     * packets circulating. Not a rejection test.
+     */
+    fun isStale(timestampMs: Long): Boolean =
+        clock() - timestampMs > staleForRelaySeconds * 1000L
+
+    /** Highest counter seen for diagnostics/rate limiting, if any. */
+    fun highestCounter(channelId: ByteArray, identityPublicKey: ByteArray): Long? =
         synchronized(this) {
-            senders.remove(senderId.toLongKey())
+            senders[cacheKey(channelId, identityPublicKey)]?.highestCounter
+        }
+
+    /** Drops cached state for one identity in one channel (e.g. roster removal). */
+    fun forget(channelId: ByteArray, identityPublicKey: ByteArray) {
+        synchronized(this) {
+            senders.remove(cacheKey(channelId, identityPublicKey))
         }
     }
 
-    private fun recordSeen(state: SenderState, messageId: Long) {
-        while (state.seen.size >= maxSeenIdsPerSender) {
-            val oldest = state.seen.keys.iterator()
+    private fun prune(state: SenderState, nowMs: Long) {
+        val cutoff = nowMs - retentionSeconds * 1000L
+        val iterator = state.messages.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (entry.value.timestampMs < cutoff) {
+                if (state.counterToMessage[entry.value.counter] == entry.value.messageId) {
+                    state.counterToMessage.remove(entry.value.counter)
+                }
+                iterator.remove()
+            }
+        }
+    }
+
+    private fun enforceBound(state: SenderState) {
+        while (state.messages.size > maxMessagesPerSender) {
+            val oldest = state.messages.entries.iterator()
+            if (!oldest.hasNext()) break
+            val record = oldest.next().value
+            if (state.counterToMessage[record.counter] == record.messageId) {
+                state.counterToMessage.remove(record.counter)
+            }
+            oldest.remove()
+        }
+    }
+
+    private fun evictSenders() {
+        while (senders.size > maxSenders) {
+            val oldest = senders.keys.iterator()
             if (!oldest.hasNext()) break
             oldest.next()
             oldest.remove()
         }
-        state.seen[messageId] = true
     }
 
-    /** Returns false when [counter] was already seen or is too old. */
-    private fun recordCounter(state: SenderState, counter: Long): Boolean {
-        if (counter < 0) return false
+    private fun cacheKey(channelId: ByteArray, identityPublicKey: ByteArray): String =
+        channelId.toHexString() + ":" + identityPublicKey.toHexString()
 
-        if (state.highestCounter == Long.MIN_VALUE) {
-            state.highestCounter = counter
-            state.counterBitmap = 1L
-            return true
+    private fun ByteArray.toHexString(): String = buildString(size * 2) {
+        for (byte in this@toHexString) {
+            val value = byte.toInt() and 0xff
+            append(HEX[value ushr 4])
+            append(HEX[value and 0x0f])
         }
-
-        val highest = state.highestCounter
-        if (counter > highest) {
-            val shift = counter - highest
-            state.counterBitmap = if (shift >= COUNTER_WINDOW_BITS) {
-                1L
-            } else {
-                (state.counterBitmap shl shift.toInt()) or 1L
-            }
-            state.highestCounter = counter
-            return true
-        }
-
-        val offset = highest - counter
-        if (offset >= COUNTER_WINDOW_BITS) return false
-        val mask = 1L shl offset.toInt()
-        if (state.counterBitmap and mask != 0L) return false
-        state.counterBitmap = state.counterBitmap or mask
-        return true
     }
 
     private class SenderState {
-        val seen = LinkedHashMap<Long, Boolean>()
-        var highestCounter: Long = Long.MIN_VALUE
-        var counterBitmap: Long = 0L
+        val messages = LinkedHashMap<Long, MessageRecord>()
+        val counterToMessage = HashMap<Long, Long>()
+        var highestCounter: Long = 0
     }
 
-    private fun ByteArray.toLongKey(): Long {
-        var value = 0L
-        for (byte in this) {
-            value = (value shl 8) or (byte.toLong() and 0xff)
-        }
-        return value
-    }
+    private class MessageRecord(
+        val messageId: Long,
+        val counter: Long,
+        val timestampMs: Long,
+    )
 
     private companion object {
-        const val ID_SIZE = 8
-        const val COUNTER_WINDOW_BITS = 64
+        const val CHANNEL_ID_SIZE = 8
+        const val MAX_COUNTER = 0xFFFF_FFFFL
+        const val HEX = "0123456789abcdef"
     }
 }

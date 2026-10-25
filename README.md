@@ -1,9 +1,11 @@
 # Bit Audio
 
+[![build](https://github.com/solar23040/bit-audio/actions/workflows/build.yml/badge.svg)](https://github.com/solar23040/bit-audio/actions/workflows/build.yml)
+
 Push-to-talk voice notes over a BLE mesh. No servers, no accounts.
 
-Status: **Phase 0 (foundations)**. Interfaces, packet format, cloud CI, and an
-in-memory fake transport are in place. See `pllan.md` for the full plan.
+Status: **Phase 0 (foundations) complete**. Interfaces, packet format, cloud CI,
+and an in-memory fake transport are in place. See `pllan.md` for the full plan.
 
 ## Modules
 

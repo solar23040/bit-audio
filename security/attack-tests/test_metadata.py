@@ -24,7 +24,7 @@ from collections import Counter, defaultdict
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from config import DEFAULT_ARTIFACT_DIR, add_sink_args, setup_logging
+from config import DEFAULT_ARTIFACT_DIR, setup_logging
 
 
 @dataclass(frozen=True)
@@ -151,7 +151,6 @@ def analyze(
                 "address": address,
                 "kind": address_kind(address),
                 "adverts": len(items),
-                "first_s": round(times[0] - times[0], 1),
                 "span_s": round(times[-1] - times[0], 1),
                 "median_gap_s": round(statistics.median(gaps), 2) if gaps else None,
                 "names": sorted({a.name for a in items if a.name}),
@@ -163,7 +162,11 @@ def analyze(
     fingerprints: dict[str, set[str]] = defaultdict(set)
     for advert in adverts:
         fingerprints[fingerprint(advert)].add(advert.address)
-    shared = {fp: addrs for fp, addrs in fingerprints.items() if len(addrs) > 1}
+    shared = {
+        fp: addrs
+        for fp, addrs in fingerprints.items()
+        if len(addrs) > 1 and fp.strip("|")
+    }
 
     flags: list[dict[str, str]] = []
     names = Counter(a.name for a in adverts if a.name)
@@ -288,7 +291,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    add_sink_args(parser)
+    parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--duration", type=float, default=300.0, help="seconds to scan")
     parser.add_argument("--uuid", help="only adverts containing this service UUID")
     parser.add_argument("--name", help="only adverts whose local name matches this regex")

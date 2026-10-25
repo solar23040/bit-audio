@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
 from typing import Protocol
 
-from config import BleConfig, Config, log
+from config import BleConfig, Config
 from wire import frame_summary, now_ms
 
 log = logging.getLogger("meshattack.sink")

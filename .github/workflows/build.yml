@@ -54,13 +54,22 @@ jobs:
           retention-days: 7
 
   security-harness:
-    name: Security harness self-check
+    name: Security attacks (:mesh + :crypto on FakeNetwork)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Check out
         uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -78,10 +87,79 @@ jobs:
         working-directory: security/attack-tests
         run: python selfcheck.py
 
-      - name: Mesh attack cases over FakeNetwork
+      - name: Reference mesh-rule cases (executable spec, no hardware)
         working-directory: security/attack-tests
         run: python test_mesh_contract.py
 
-      - name: Parser fuzz smoke (SEC-012)
+      - name: Real mesh + crypto attack suite
+        run: >
+          ./gradlew --no-daemon --stacktrace
+          -I security/ci/harness.init.gradle.kts
+          :security-harness:testDebugUnitTest
+          --tests "com.solar23040.bitaudio.security.MeshAttackTest"
+          --tests "com.solar23040.bitaudio.security.ContractVectorTest"
+
+      - name: Upload security test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-attacks-${{ github.run_number }}
+          path: |
+            security/harness/build/reports/tests/**
+            security/harness/build/test-results/**
+            security/harness/build/security-observations.txt
+          if-no-files-found: ignore
+          retention-days: 14
+
+  security-fuzz:
+    name: Security fuzz (time-boxed packet decode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install harness dependencies
+        run: python -m pip install --disable-pip-version-check "PyNaCl>=1.5"
+
+      - name: JVM packet-decode fuzz (90 s per mesh implementation)
+        env:
+          SECURITY_FUZZ_SECONDS: "90"
+        run: >
+          ./gradlew --no-daemon --stacktrace
+          -I security/ci/harness.init.gradle.kts
+          :security-harness:testDebugUnitTest
+          --tests "com.solar23040.bitaudio.security.PacketDecodeFuzzTest"
+
+      - name: Python structure-aware fuzz (dry sink, 15 s)
         working-directory: security/attack-tests
-        run: python fuzz_packets.py --self-check
+        run: >
+          python fuzz_packets.py --sink dry --duration 15 --rate 200
+          --seed 20261025
+
+      - name: Upload fuzz reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-fuzz-${{ github.run_number }}
+          path: |
+            security/harness/build/reports/tests/**
+            security/harness/build/test-results/**
+            security/attack-tests/captures/fuzz/**
+          if-no-files-found: ignore
+          retention-days: 14

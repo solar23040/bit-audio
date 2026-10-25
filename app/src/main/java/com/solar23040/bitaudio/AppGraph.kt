@@ -44,10 +44,10 @@ class AppGraph(context: Context) {
     val player = PreviewPlayer()
 
     /**
-     * Swap for the real BLE/mesh runtime in Phase 2. Nothing else in `:app`
-     * constructs transport or mesh objects directly.
+     * Real BLE transport + mesh. Nothing else in `:app` constructs transport or
+     * mesh objects directly; the foreground service only sees [MeshRuntime].
      */
-    val runtime: MeshRuntime = OfflineMeshRuntime()
+    val runtime: MeshRuntime = BleMeshRuntime(appContext, channels, scope)
 
     fun createChannel(name: String, alias: String): Channel {
         val key = ChannelIdCodec.randomKey()

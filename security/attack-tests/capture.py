@@ -14,7 +14,7 @@ import time
 from collections import Counter
 from pathlib import Path
 
-from config import DEFAULT_ARTIFACT_DIR, add_sink_args, load_config, setup_logging
+from config import DEFAULT_ARTIFACT_DIR, load_config, setup_logging
 from wire import frame_summary, parse_packet
 
 
@@ -109,7 +109,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    add_sink_args(parser)
+    parser.add_argument("--config", type=Path, default=None, help="attack config with a ble section")
+    parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--duration", type=float, default=60.0, help="seconds to listen")
     parser.add_argument("--out", type=Path, default=None, help="JSONL capture file")
     parser.add_argument("--address", help="override ble.address")
@@ -125,8 +126,6 @@ def main() -> int:
             "capture connects to real hardware; pass --i-own-this-device to confirm"
         )
     out = args.out or (DEFAULT_ARTIFACT_DIR / f"capture-{int(time.time())}.jsonl")
-    if args.sink != "dry":
-        print("note: capture ignores --sink; it always talks to BLE")
     try:
         asyncio.run(
             capture_notifications(

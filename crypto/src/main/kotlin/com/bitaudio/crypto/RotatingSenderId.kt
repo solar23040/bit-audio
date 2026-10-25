@@ -6,49 +6,47 @@ import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
 
 /**
- * Rotating 8-byte sender IDs.
+ * Rotating 8-byte sender IDs, exactly as specified in
+ * `docs/packet-format.md`:
  *
- * `sender_id = trunc8(HMAC-SHA256(key, "bit-audio/sender-id/v1" || pubkey || epoch))`
- * where `key = HMAC-SHA256(channelKey, "bit-audio/sender-id-key/v1")`.
+ * ```
+ * id_key    = HMAC-SHA256(channel_key, "bit-audio/sender-id-key/v1")
+ * epoch     = floor(timestamp_ms / 900000)
+ * sender_id = HMAC-SHA256(id_key, "bit-audio/sender-id/v1" || identity_pubkey(32) || epoch_u64)[0..8]
+ * ```
  *
- * Only channel members can compute the IDs, so outsiders cannot link packets
- * to an identity across epochs. Receivers resolve an ID back to a member key
- * by trying the keys in [PeerDirectory] for the packet's timestamp epoch
- * (+/- one epoch for clock skew). No extra bytes are needed in the packet.
+ * Only channel members can compute IDs, so outsiders cannot link packets to an
+ * identity across epochs. Within one epoch packets remain linkable to each
+ * other, which is what lets the mesh route replies.
  *
- * Limitation: packets from the same sender within one epoch are linkable to
- * each other (that is what lets the mesh route replies). Epoch length trades
- * privacy against resolution cost; 15 minutes is the default.
+ * Receivers resolve an ID against the channel roster for the packet's epoch and
+ * +/- one epoch (`PeerDirectory.resolve`), then verify the signature with the
+ * resolved stable key.
  */
 object RotatingSenderId {
 
     const val ID_SIZE = 8
-    const val DEFAULT_EPOCH_SECONDS = 15 * 60
+    const val EPOCH_MILLIS = 15 * 60 * 1000L
 
     private val KEY_DOMAIN = "bit-audio/sender-id-key/v1".toByteArray(Charsets.US_ASCII)
     private val ID_DOMAIN = "bit-audio/sender-id/v1".toByteArray(Charsets.US_ASCII)
 
-    fun epochFor(
-        timestampSeconds: Long,
-        epochSeconds: Int = DEFAULT_EPOCH_SECONDS,
-    ): Long {
-        require(epochSeconds > 0) { "epochSeconds must be > 0" }
-        return Math.floorDiv(timestampSeconds, epochSeconds.toLong())
-    }
+    fun epochFor(timestampMs: Long): Long = Math.floorDiv(timestampMs, EPOCH_MILLIS)
 
     fun derive(
         channelSecret: ByteArray,
         senderPublicKey: ByteArray,
-        timestampSeconds: Long,
-        epochSeconds: Int = DEFAULT_EPOCH_SECONDS,
-    ): ByteArray = deriveForEpoch(channelSecret, senderPublicKey, epochFor(timestampSeconds, epochSeconds))
+        timestampMs: Long,
+    ): ByteArray = deriveForEpoch(channelSecret, senderPublicKey, epochFor(timestampMs))
 
     fun deriveForEpoch(
         channelSecret: ByteArray,
         senderPublicKey: ByteArray,
         epoch: Long,
     ): ByteArray {
-        require(channelSecret.size == ChannelKeys.KEY_SIZE) { "channel secret must be ${ChannelKeys.KEY_SIZE} bytes" }
+        require(channelSecret.size == ChannelKeys.KEY_SIZE) {
+            "channel secret must be ${ChannelKeys.KEY_SIZE} bytes"
+        }
         require(senderPublicKey.size == Ed25519.PUBLIC_KEY_SIZE) {
             "sender public key must be ${Ed25519.PUBLIC_KEY_SIZE} bytes"
         }
@@ -84,9 +82,9 @@ object RotatingSenderId {
 }
 
 /**
- * Channel-scoped set of member Ed25519 public keys, learned from QR joins or
- * in-band membership announcements. Used to resolve rotating sender IDs.
- * Thread-safe.
+ * Channel-scoped roster of member Ed25519 public keys, learned from QR joins or
+ * in-band membership announcements. Used to resolve rotating sender IDs back to
+ * the stable signing key. Thread-safe.
  */
 class PeerDirectory(initialPublicKeys: Collection<ByteArray> = emptyList()) {
 
@@ -118,23 +116,21 @@ class PeerDirectory(initialPublicKeys: Collection<ByteArray> = emptyList()) {
         get() = publicKeys.size
 
     /**
-     * Maps a packet's rotating ID back to a member public key, trying the
-     * timestamp's epoch and [epochSkew] epochs on either side.
+     * Resolves [senderId] to a roster key using the epoch of [timestampMs] and
+     * [epochSkew] epochs on either side (default 1, per the wire format).
      */
     fun resolve(
         channelSecret: ByteArray,
         senderId: ByteArray,
-        timestampSeconds: Long,
-        epochSeconds: Int = RotatingSenderId.DEFAULT_EPOCH_SECONDS,
+        timestampMs: Long,
         epochSkew: Int = 1,
     ): ByteArray? {
         require(senderId.size == RotatingSenderId.ID_SIZE) {
             "sender ID must be ${RotatingSenderId.ID_SIZE} bytes"
         }
-        require(epochSeconds > 0) { "epochSeconds must be > 0" }
         require(epochSkew >= 0) { "epochSkew must be >= 0" }
 
-        val epoch = RotatingSenderId.epochFor(timestampSeconds, epochSeconds)
+        val epoch = RotatingSenderId.epochFor(timestampMs)
         for (candidateEpoch in (epoch - epochSkew)..(epoch + epochSkew)) {
             for (publicKey in publicKeys) {
                 val expected = RotatingSenderId.deriveForEpoch(channelSecret, publicKey, candidateEpoch)

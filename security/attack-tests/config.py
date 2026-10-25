@@ -39,7 +39,7 @@ class BleConfig:
 @dataclass(frozen=True)
 class Limits:
     max_pps: float = 50.0
-    max_frames: int = 2000
+    max_frames: int = 100_000
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ def load_config(path: Path | None = None, *, required: bool = True) -> Config:
         raise ConfigError(f"{name}: limits must be an object")
     limits = Limits(
         max_pps=float(limits_raw.get("max_pps", 50)),
-        max_frames=int(limits_raw.get("max_frames", 2000)),
+        max_frames=int(limits_raw.get("max_frames", 100_000)),
     )
     if limits.max_pps <= 0 or limits.max_frames <= 0:
         raise ConfigError(f"{name}: limits must be positive")
@@ -243,11 +243,11 @@ def artifact_dir() -> Path:
 
 
 def check_frame_size(frames: list[bytes]) -> None:
-    too_big = [len(f) for f in frames if len(f) > 300]
+    too_big = [len(f) for f in frames if len(f) > 512]
     if too_big:
         print(
-            f"warning: {len(too_big)} frame(s) exceed the 300 B target "
-            f"(max {max(too_big)} B); the transport layer will fragment them",
+            f"warning: {len(too_big)} frame(s) exceed the 512 B v1 maximum "
+            f"(max {max(too_big)} B); the app must discard them",
             file=sys.stderr,
         )
 
