@@ -9,16 +9,21 @@ import com.bitaudio.crypto.RotatingSenderId
 import com.meshvoice.transport.Peer
 import com.meshvoice.transport.ReceivedFrame
 import com.meshvoice.transport.Transport
+import com.solar23040.bitaudio.mesh.store.MeshStore
+import com.solar23040.bitaudio.mesh.store.StoredPacket
 import java.security.SecureRandom
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -42,8 +47,11 @@ import kotlinx.coroutines.launch
  * response. [MeshException] is reserved for local misuse (unknown channel or
  * oversized payload).
  *
- * Persistence is intentionally not part of this phase: undelivered packets are
- * not stored across process death yet.
+ * With a [store], every sealed frame is also persisted (never plaintext) and
+ * replayed to newly discovered neighbours with TTL 1, so a clip recorded while
+ * offline is handed to the next peer that appears. The store also owns the
+ * per-channel counter, which therefore survives process death without ever
+ * being reused for a different message.
  */
 class MeshEngine(
     private val transport: Transport,
@@ -53,6 +61,7 @@ class MeshEngine(
     private val config: MeshConfig = MeshConfig(),
     private val clock: () -> Long = System::currentTimeMillis,
     externalScope: CoroutineScope? = null,
+    private val store: MeshStore? = null,
 ) : Mesh, AutoCloseable {
 
     private val identityPublicKey: ByteArray = localPublicKey.copyOf()
@@ -82,6 +91,13 @@ class MeshEngine(
     /** Receives frames from the transport. Registered last so all state exists. */
     private val receiveHandle: AutoCloseable = transport.onReceive { frame -> onFrame(frame) }
 
+    /** Replays stored packets to peers as they are discovered. */
+    private val peerJob: Job? = if (store != null) {
+        scope.launch { collectPeers() }
+    } else {
+        null
+    }
+
     /** Add or replace the runtime state for [channel]. */
     fun addChannel(channel: MeshChannel) {
         channels[channel.channelId] = ChannelRuntime(
@@ -107,7 +123,10 @@ class MeshEngine(
         val timestampSeconds = now / 1000L
         val messageId = ByteArray(MESSAGE_ID_SIZE).also(random::nextBytes)
         val messageIdHex = messageId.toHexString()
-        val counter = runtime.nextCounter()
+        val counter = store?.nextCounter(channel) ?: runtime.nextCounter()
+        if (counter !in 1..0xFFFF_FFFFL) {
+            throw MeshException("Counter exhausted on channel $channel")
+        }
         if (!runtime.acceptCounter(localTag.hex, counter, messageIdHex)) {
             throw MeshException("Replay counter collision on channel $channel")
         }
@@ -144,6 +163,28 @@ class MeshEngine(
             packets += sealPacket(runtime, header, payload.copyOfRange(from, to))
         }
 
+        // Persist before the first hop so a clip recorded with no neighbours is
+        // handed off later. Storage is sealed frames only.
+        store?.let { store ->
+            try {
+                expireStored()
+                for (index in packets.indices) {
+                    store.save(
+                        StoredPacket(
+                            channel = channel,
+                            messageId = messageIdHex,
+                            chunkIndex = index,
+                            timestampMs = now,
+                            expiresAtMs = now + config.retentionMs,
+                            frame = packets[index],
+                        ),
+                    )
+                }
+            } catch (e: Exception) {
+                throw MeshException("Could not store outgoing packets", e)
+            }
+        }
+
         // Seed our own replay/dedup state so a looped echo cannot be relayed or
         // delivered back to the publisher.
         for (index in packets.indices) {
@@ -163,8 +204,8 @@ class MeshEngine(
                 try {
                     transport.send(peer, packet)
                 } catch (_: Exception) {
-                    // Store-and-forward/retry is not part of this phase; a failed
-                    // link must not fail the local recording.
+                    // The frame is already in the store, so the next peer
+                    // discovery or a later replay retries it.
                 }
             }
         }
@@ -177,6 +218,7 @@ class MeshEngine(
 
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
+        peerJob?.cancel()
         runCatching { receiveHandle.close() }
         if (ownsScope) scope.cancel()
         callbacks.clear()
@@ -268,6 +310,8 @@ class MeshEngine(
             packet.sealedPayload,
         ) ?: return
 
+        persistReceived(frame.bytes, packet, messageIdHex, now)
+
         val hopCount = (config.defaultTtl - packet.header.ttl).coerceAtLeast(0)
         deliverChunk(runtime, packet.header, tag, messageIdHex, hopCount, plaintext, now)
 
@@ -275,6 +319,112 @@ class MeshEngine(
             relay(frame.bytes, packet.header.ttl - 1, frame.from)
         }
     }
+
+    /**
+     * Keep a verified, decrypted frame for store-and-forward. Frames go to the
+     * store only after authentication, so a malicious neighbour cannot fill it.
+     * A storage failure must not interrupt local delivery.
+     */
+    private fun persistReceived(
+        frameBytes: ByteArray,
+        packet: MeshPacket,
+        messageIdHex: String,
+        now: Long,
+    ) {
+        val store = store ?: return
+        try {
+            store.save(
+                StoredPacket(
+                    channel = packet.header.channelId,
+                    messageId = messageIdHex,
+                    chunkIndex = packet.header.chunkIndex,
+                    timestampMs = packet.header.timestampMs,
+                    expiresAtMs = now + config.retentionMs,
+                    frame = frameBytes,
+                ),
+            )
+        } catch (_: Exception) {
+            // Delivery already succeeded; the packet simply is not retried.
+        }
+    }
+
+    /** Watches topology changes and hands stored frames to each new neighbour. */
+    private suspend fun collectPeers() {
+        val known = HashSet<String>()
+        try {
+            transport.peers().collect { peers ->
+                val current = peers.mapTo(HashSet()) { it.id }
+                known.retainAll(current)
+                val added = peers.filter { known.add(it.id) }
+                if (added.isNotEmpty()) replayStored(added)
+            }
+        } catch (expected: CancellationException) {
+            throw expected
+        } catch (_: Exception) {
+            // A broken transport flow stops handoff but never local delivery.
+        }
+    }
+
+    /**
+     * Re-sends stored frames to [peers] with TTL forced to 1: receivers deliver
+     * and ack them locally but do not flood them again. The signature stays
+     * valid because TTL is not signed, and it is re-verified before sending.
+     */
+    private fun replayStored(peers: List<Peer>) {
+        val store = store ?: return
+        val now = clock()
+        val packets = try {
+            expireStored()
+            store.loadUnexpired(now)
+        } catch (_: Exception) {
+            return
+        }
+        if (packets.isEmpty()) return
+
+        scope.launch {
+            for (packet in packets) {
+                if (closed.get()) return@launch
+                val runtime = channels[packet.channel] ?: continue
+                val decoded = MeshPacketCodec.decode(packet.frame) ?: continue
+                if (decoded.header.channelId != packet.channel) continue
+                if (decoded.header.messageId.toHexString() != packet.messageId) continue
+                if (decoded.header.chunkIndex != packet.chunkIndex) continue
+
+                val sender = runtime.channel.directory.resolve(
+                    runtime.channel.channelKey,
+                    decoded.header.senderId,
+                    decoded.header.timestampMs / 1000L,
+                ) ?: continue
+                val canonical = MeshPacketCodec.headerBytes(decoded.header.copy(ttl = 0))
+                if (!PacketCrypto.verifyPacket(
+                        crypto,
+                        sender,
+                        canonical,
+                        decoded.sealedPayload,
+                        decoded.signature,
+                    )
+                ) {
+                    continue
+                }
+
+                val frame = MeshPacketCodec.withTtl(packet.frame, 1) ?: continue
+                for (peer in peers) {
+                    try {
+                        transport.send(peer, frame)
+                    } catch (_: Exception) {
+                        // The next topology change or retry will try again.
+                    }
+                }
+            }
+        }
+    }
+
+    private fun expireStored() {
+        runCatching { store?.deleteExpired(clock()) }
+    }
+
+    /** Number of frames currently held by the store. */
+    fun storedPacketCount(): Int = runCatching { store?.size() ?: 0 }.getOrDefault(0)
 
     private fun isStale(timestampMs: Long, now: Long): Boolean =
         now - timestampMs > config.staleAfterMs
