@@ -472,7 +472,7 @@ class MeshAttackTest {
             }
         }
 
-        // SEC-019: docs require counter >= 1. MeshEngine rejects 0; MeshNode
+        // SEC-017: docs require counter >= 1. MeshEngine rejects 0; MeshNode
         // currently accepts it.
         for (kind in MeshKind.entries) {
             val rig = Rig(this, kind)
@@ -490,9 +490,9 @@ class MeshAttackTest {
                 runCurrent()
                 val accepted = rig.deliveredAt("b").isNotEmpty()
                 if (accepted) {
-                    println("[SEC-019][$kind] OPEN: counter=0 accepted (docs require 1..2^32-1)")
+                    println("[SEC-017][$kind] OPEN: counter=0 accepted (docs require 1..2^32-1)")
                 } else {
-                    println("[SEC-019][$kind] fixed: counter=0 rejected")
+                    println("[SEC-017][$kind] fixed: counter=0 rejected")
                 }
                 if (kind == MeshKind.ENGINE) {
                     assertFalse("MeshEngine accepted counter=0", accepted)
