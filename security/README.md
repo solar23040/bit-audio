@@ -13,12 +13,15 @@ and [`docs/interfaces.md`](../docs/interfaces.md).
 ## Current status
 
 - Threat model: v0.2, updated for the landed v1 packet format.
-- Findings: 16 entries from design/contract review. No hardware results yet.
-- Harness: self-check passes locally (`python selfcheck.py`,
-  `python fuzz_packets.py --self-check`); dry-run and simulator paths work.
-- **Blocking:** SEC-016 — `:crypto` derivations/transcript do not match
-  `docs/packet-format.md`. Live spoofing/replay/fuzz results are meaningless
-  until Agent A reconciles the contract. See findings.md.
+- Findings: 17 entries. Spoofing, replay, flood/reassembly bounds, TTL handling
+  and relay tampering are verified in CI against the real `:mesh` + `:crypto`
+  on `FakeNetwork`; BLE/Keystore/UI findings still need device or app tests.
+- Harness: `security-harness` and `security-fuzz` jobs run on every push;
+  self-check and dry-run paths also work locally.
+- **Resolved:** SEC-016 — docs v1, `:crypto` and the committed contract vector
+  now agree (run `40301889226`). Remaining open code findings: SEC-001
+  (`MeshNode` dedup), SEC-004 (`MeshNode` ingress rate limit), SEC-017
+  (`MeshNode` accepts `counter = 0`). See findings.md.
 
 ## Quick start
 

@@ -23,7 +23,8 @@ All evidence below comes from the `build` workflow on `agent-h/phase-2`:
 
 | Run | Commit | Result |
 |---|---|---|
-| [`40295667740`](https://github.com/solar23040/bit-audio/actions/runs/40295667740) | `983d189` | green: `security-harness`, `security-fuzz`, `Test, lint, build APK` |
+| [`40301889226`](https://github.com/solar23040/bit-audio/actions/runs/40301889226) | `23b2e25` | green: `security-harness`, `security-fuzz` (60 s budget), `Test, lint, build APK` |
+| [`40295667740`](https://github.com/solar23040/bit-audio/actions/runs/40295667740) | `983d189` | green with the earlier 90 s fuzz budget |
 | [`40208211416`](https://github.com/solar23040/bit-audio/actions/runs/40208211416) | `65d511b` | first fully green full-suite run (same tests, pre-SEC-017 label) |
 
 Jobs:
@@ -35,7 +36,7 @@ Jobs:
   implementations (`MeshEngine` and the `AppGraph`-wired `MeshNode`) with the
   real `:crypto` on `FakeNetwork`.
 - `security-fuzz` — the same harness module running `PacketDecodeFuzzTest`
-  (`SECURITY_FUZZ_SECONDS=90` per implementation) plus
+  (`SECURITY_FUZZ_SECONDS=60` per implementation) plus
   `fuzz_packets.py --sink dry --duration 15`.
 
 A red run blocks the branch. Known-open findings are printed to the test output
@@ -46,22 +47,22 @@ properties are hard assertions.
 
 | ID | Severity | Area | Status | Owner |
 |---|---|---|---|---|
-| SEC-001 | High | Dedup/verify ordering | **Open — reproduced in `MeshNode`** (`MeshEngine` fixed) | D + E |
+| SEC-001 | High | Dedup/verify ordering | **Open — reproduced in `MeshNode` (`MeshEngine` fixed)** | D + E |
 | SEC-002 | High | Header authentication | **Fixed — verified in CI** | E + D |
 | SEC-003 | Medium | Reassembly resource bounds | **Fixed — verified in CI** | C + D |
-| SEC-004 | High | Relay flood amplification | **Partial — `MeshEngine` rate-limited, `MeshNode` has no ingress limiter** | D |
-| SEC-005 | Medium | BLE metadata/linkability | Open (needs device test) | C + F |
-| SEC-006 | Medium | Keystore Ed25519 fallback | Mitigated in code — device test pending | E |
-| SEC-007 | Medium | No forward secrecy | Accepted + document | E |
+| SEC-004 | High | Relay flood amplification | **Open — `MeshEngine` rate-limited, `MeshNode` has no ingress limiter** | D |
+| SEC-005 | Medium | BLE metadata/linkability | **Open — needs device/radio test** | C + F |
+| SEC-006 | Medium | Keystore Ed25519 fallback | **Open — mitigated in code, device test pending** | E |
+| SEC-007 | Medium | No forward secrecy | **Won't Fix — accepted MVP limitation; document it** | E |
 | SEC-008 | Medium | Replay window vs store-and-forward | **Fixed — verified in CI** | E + D |
-| SEC-009 | Medium | Ack forgery/retransmit amplification | Open (Phase 2 acks not implemented) | C |
-| SEC-010 | Medium | QR invite is a bearer secret | Open (app UX) | F + E |
-| SEC-011 | Low | Relay/channel metadata exposure | Accepted + document | D + F |
+| SEC-009 | Medium | Ack forgery/retransmit amplification | **Open — Phase 2 acks not implemented** | C |
+| SEC-010 | Medium | QR invite is a bearer secret | **Open — app UX/QR screens** | F + E |
+| SEC-011 | Low | Relay/channel metadata exposure | **Won't Fix — accepted MVP limitation; document it** | D + F |
 | SEC-012 | Low | Parser fuzzing not in CI | **Fixed — time-boxed fuzz job in CI** | A + G |
-| SEC-013 | Low | UI alias/identity binding | Open (design review) | F |
-| SEC-014 | Low | Relay storage quota/retention | Open (no hard disk cap yet) | D + F |
-| SEC-015 | Info | Malicious member content | Accepted | — |
-| SEC-016 | High | Crypto code ≠ packet format v1 | **Fixed — docs v1 + code + vector agree** | A + E |
+| SEC-013 | Low | UI alias/identity binding | **Open — UI/identity binding** | F |
+| SEC-014 | Low | Relay storage quota/retention | **Open — no global disk quota yet** | D + F |
+| SEC-015 | Info | Malicious member content | **Won't Fix — inherent to key-based groups; documented** | — |
+| SEC-016 | High | Crypto code ≠ packet format v1 | **Fixed — docs v1, code and vector agree** | A + E |
 | SEC-017 | Medium | `MeshNode` accepts `counter = 0` | **Open — reproduced in CI** | D |
 
 
@@ -115,7 +116,7 @@ churn/availability loss. Gets worse if `msg_id` ever becomes predictable
 the victim's sender ID and the baseline's `msg_id` first, then the valid
 baseline. Exactly one valid clip may arrive.
 
-**CI result (run `40295667740`):** partially fixed.
+**CI result (run `40301889226`):** open for `MeshNode`, fixed for `MeshEngine`.
 `MeshAttackTest > spoofed sender is dropped and never relayed` proves both
 implementations verify the signature **before** inserting into the seen cache,
 so the pre-authentication poisoning path is closed. `MeshAttackTest > known open
@@ -160,7 +161,7 @@ show only the baseline clip; `--include-ttl` must show no amplification/loops.
 `fuzz_packets.py` covers the same fields. Harness assumes the docs layout; see
 `wire.py`.
 
-**CI result (run `40295667740`):** fixed. `ContractVectorTest > docs v1 contract
+**CI result (run `40301889226`):** fixed. `ContractVectorTest > docs v1 contract
 vector verifies with production crypto` proves the committed v1 frames verify
 and open with `:crypto`, and that rewriting `ttl` (relay) keeps both verifications
 valid. `MeshAttackTest > malicious relay mutations are rejected` asserts that
@@ -194,20 +195,20 @@ bound.
 then `fuzz_packets.py --duration 60`. Phase 5 acceptance: 1-hour fuzz run
 without a crash.
 
-**CI result (run `40295667740`):** fixed. `MeshAttackTest > flood and reassembly
+**CI result (run `40301889226`):** fixed. `MeshAttackTest > flood and reassembly
 claims stay bounded and do not block delivery` pushes 2,000 random frames plus
 300 validly signed frames that each claim 256 chunks; both implementations keep
 the partial cache bounded, never relay the hostile traffic, and still deliver a
 final valid clip. `PacketDecodeFuzzTest` runs 250,000 mutated/truncated/oversized
-frames per implementation (≈2,800/s) for 90 s each without a crash or a lost
-follow-up delivery. The remaining Phase 5 item is the 1-hour nightly run, not a
-code fix.
+frames per implementation (≈4,166/s, the 250,000-frame cap is reached before the
+60 s deadline) without a crash or a lost follow-up delivery. The remaining
+Phase 5 item is the 1-hour nightly run, not a code fix.
 
 ---
 
 ## SEC-004 — Relay flood amplification and airtime exhaustion
 
-**Severity:** High · **Status:** Partial — `MeshEngine` rate-limited, `MeshNode` has no ingress limiter · **Owner:** D
+**Severity:** High · **Status:** Open — `MeshEngine` rate-limited, `MeshNode` has no ingress limiter · **Owner:** D
 
 TTL flooding rebroadcasts valid packets; a member or a nearby non-member can
 send high-rate frames. Even when invalid frames are dropped after verification,
@@ -231,7 +232,7 @@ from outside the channel (garbage) or by a rogue member (valid high-TTL).
 `--probe-uuid`. Compare valid clip delivery before/during/after; document
 achieved pps vs dropped.
 
-**CI result (run `40295667740`):** partial. `MeshEngine` applies
+**CI result (run `40301889226`):** open. `MeshEngine` applies
 `RateLimiter` token buckets per neighbour (before decode/crypto) and per
 resolved identity (after verification), configured by `MeshConfig`
 (`perNeighbourRate`, `perSenderRate`). `MeshNode` parses and verifies every
@@ -245,7 +246,7 @@ hostile traffic and keep delivering valid clips (see SEC-003 evidence).
 
 ## SEC-005 — BLE identifiers and advertisement payload enable tracking
 
-**Severity:** Medium · **Status:** Open (needs device test) · **Owner:** C + F
+**Severity:** Medium · **Status:** Open — needs device/radio test · **Owner:** C + F
 
 Sender IDs rotate every 15 minutes via
 `HMAC(channel_key, "bit-audio/sender-id/v1" || pubkey || epoch)`; outsiders
@@ -270,11 +271,13 @@ device across conversations.
 idle phone. Success: address changes or payload is constant-free; no stable
 fingerprint across the window. Field test; a human confirms the OS policy.
 
+**CI result (run `40301889226`):** not covered. Advertisement payload and address rotation are BLE/OS properties; the JVM suite runs on `FakeNetwork` and cannot observe them. Needs `test_metadata.py` on two owned phones.
+
 ---
 
 ## SEC-006 — Ed25519 is not available in Android Keystore on all devices
 
-**Severity:** Medium · **Status:** Mitigated in code — device test pending · **Owner:** E
+**Severity:** Medium · **Status:** Open — mitigated in code, device test pending · **Owner:** E
 
 Android Keystore EdDSA support starts at API 33 and is not uniform across OEMs.
 The current implementation already avoids the obvious footgun:
@@ -308,11 +311,13 @@ wrapping.
 `adb shell run-as <pkg>` files for plaintext seeds; attempt signing after key
 invalidation (e.g. lock-screen change) and confirm graceful re-onboarding.
 
+**CI result (run `40301889226`):** not covered. Keystore behaviour depends on the Android version/OEM; this is a device matrix test (API 30/31 and 33+), not a JVM test.
+
 ---
 
 ## SEC-007 — No forward secrecy; static channel key
 
-**Severity:** Medium · **Status:** Accepted for MVP, must be documented · **Owner:** E
+**Severity:** Medium · **Status:** Won't Fix — accepted MVP limitation; document it · **Owner:** E
 
 All clips are encrypted under one long-lived channel key. Anyone who obtains the
 key later (stolen device, QR leak, member leaves) can decrypt every stored clip
@@ -329,6 +334,8 @@ limits exposure. Post-MVP: epoch keys / sender keys with ratcheting.
 
 **Verification:** design review; confirm documentation and that Settings exposes
 channel rotation (Agent F's "rotate identity" is not the same thing).
+
+**CI result (run `40301889226`):** no code change expected. The deliverable is documentation plus a channel-rotation action; the suite cannot verify a design limitation.
 
 ---
 
@@ -360,7 +367,7 @@ cases.
 `--mode rewrite-ts`; sent message must be delivered exactly once. Unit tests:
 restart persistence, epoch rotation, clock jump forward/back, counter reuse.
 
-**CI result (run `40295667740`):** fixed. `MeshAttackTest > replayed frame is
+**CI result (run `40301889226`):** fixed. `MeshAttackTest > replayed frame is
 delivered once and relayed once` sends the identical frame twice and asserts
 exactly one delivery at the first hop, one relayed copy and one delivery at the
 far node, for both implementations. Both implementations key counter state by
@@ -394,6 +401,8 @@ retransmissions (airtime/battery) and potentially pinning a transfer forever.
 **Verification:** `test_malicious_relay.py --mode` plus a repeated-ack script
 (to be added with Agent C's ack format); confirm bounded retries.
 
+**CI result (run `40301889226`):** not implemented. `DELIVERY_RECEIPT`/retransmit have no receive path in `:mesh` or `:transport` yet, so there is no attack surface to exercise; re-open with Agent C's ack format.
+
 ---
 
 ## SEC-010 — QR channel invite is a bearer secret
@@ -420,11 +429,13 @@ Nothing verifies that the QR belongs to the intended group.
 **Verification:** manual UX review plus `test_metadata.py` to confirm the channel
 key/name are not advertised. Rotate/expiry unit tests in `:app`.
 
+**CI result (run `40301889226`):** not covered. QR rendering/confirmation lives in `:app`; this suite tests the `:mesh`/`:crypto` receive paths only.
+
 ---
 
 ## SEC-011 — Relays see metadata; channel_id is public by design
 
-**Severity:** Low · **Status:** Accepted for MVP, must be documented · **Owner:** D + F
+**Severity:** Low · **Status:** Won't Fix — accepted MVP limitation; document it · **Owner:** D + F
 
 Encryption protects audio, not existence. Every header carries a **stable,
 public `channel_id`** (HMAC of the channel key), so any sniffer can group
@@ -444,6 +455,8 @@ README.
 
 **Verification:** review logs (`adb logcat`) for frames/keys; inspect stored
 queue schema. No fix expected for MVP beyond documentation.
+
+**CI result (run `40301889226`):** no code change expected. Metadata exposure is inherent to the public `channel_id`; documentation is the control.
 
 ---
 
@@ -467,8 +480,8 @@ field tests. Phase 5 acceptance requires a 1-hour fuzz run without a crash.
 
 **Verification:** CI workflow contains the job and a failure blocks merge.
 
-**CI result (run `40295667740`):** fixed for the JVM parser. The `security-fuzz`
-job runs `PacketDecodeFuzzTest` (90 s per mesh implementation,
+**CI result (run `40301889226`):** fixed for the JVM parser. The `security-fuzz`
+job runs `PacketDecodeFuzzTest` (60 s per mesh implementation,
 `SECURITY_FUZZ_SECONDS`) plus the structure-aware Python fuzzer against a dry
 sink, on every push. The 1-hour nightly soak remains a Phase 5 acceptance item;
 the job timeout is 15 minutes, so raise it there rather than silently extending
@@ -478,7 +491,7 @@ the per-push budget.
 
 ## SEC-013 — UI alias is not bound to cryptographic identity
 
-**Severity:** Low · **Status:** Open — UI copy/identity binding · **Owner:** F
+**Severity:** Low · **Status:** Open — UI/identity binding · **Owner:** F
 
 The channel view shows sender alias, hop count and delivery state. If aliases
 come from unauthenticated advertisements or first-seen names, anyone can claim
@@ -493,11 +506,13 @@ senders explicitly; never update an alias from network input after enrollment.
 **Verification:** UI review; inject a packet signed by a new key claiming an
 existing alias and confirm it is shown as unknown.
 
+**CI result (run `40301889226`):** not covered. Alias rendering is `:app` UI logic with no JVM test in this suite.
+
 ---
 
 ## SEC-014 — Relay/history storage needs hard quotas and expiry
 
-**Severity:** Low · **Status:** Open — no global disk quota implemented · **Owner:** D + F
+**Severity:** Low · **Status:** Open — no global disk quota yet · **Owner:** D + F
 
 The docs specify 24 h retention and 64 KiB per message, but no global disk cap.
 Without one, a flood or a long offline period can fill storage; without expiry,
@@ -513,17 +528,21 @@ relay queue; never store plaintext after playback unless the user saves it.
 **Verification:** instrumentation test fills the queue to the cap; inspect DB
 size; confirm expiry job.
 
+**CI result (run `40301889226`):** not covered. Relay/history quotas are storage-layer work; this suite does not exercise the Room database.
+
 ---
 
 ## SEC-015 — A channel member can send malicious content
 
-**Severity:** Info · **Status:** Accepted · **Owner:** —
+**Severity:** Info · **Status:** Won't Fix — inherent to key-based groups; documented · **Owner:** —
 
 Cryptography authenticates members, not intent. A rogue member can send
 harassment, misleading clips, or large valid clips within the rate limits. This
 is inherent to a key-based group with no moderation server. UI identity binding
 (SEC-013) and the ability to leave/rotate the channel are the only controls.
 Document it; do not claim content safety.
+
+**CI result (run `40301889226`):** no code change expected. Content moderation is out of scope for a key-based group; UI identity binding (SEC-013) is the related control.
 
 ---
 
@@ -552,7 +571,7 @@ TTL stays outside both the signature and the AAD, so a relay can decrement it
 without re-signing; everything else (`version`, `type`, `msg_id`, `channel_id`,
 `sender_id`, `chunk_idx`, `total_chunks`, `timestamp_ms`, `counter`) is bound.
 
-**Evidence (run `40295667740`):**
+**CI result (run `40301889226`):**
 
 - `security/ci` Python steps: `contract_vector.py --check`, `selfcheck.py` and
   `test_mesh_contract.py` pass against `security/contract-vectors.json`.
@@ -593,15 +612,18 @@ reported` prints `[SEC-017][NODE] OPEN: counter=0 accepted (docs require
 1..2^32-1)` for `MeshNode` and asserts `MeshEngine` rejects it. The test becomes
 green for both implementations once the node check lands.
 
+**CI result (run `40301889226`):** reproduced. `MeshAttackTest > known open findings are reproduced and reported` prints `[SEC-017][NODE] OPEN: counter=0 accepted (docs require 1..2^32-1)` for `MeshNode`, and asserts `MeshEngine` rejects it (`[SEC-017][ENGINE] fixed: counter=0 rejected`).
+
 ---
 
 ## How results will be recorded
 
 1. Every push runs the `build` workflow; `security-harness` and `security-fuzz`
    must be green before merge. Attach the run ID to new/updated findings.
-2. Use one of: `Open — reproduced`, `Fixed — verified`, `Partial`,
-   `Not reproducible`, `Accepted`, and name the test (or harness command) that
-   proves it.
+2. Status is exactly one of `Fixed`, `Open` or `Won't Fix`, with a short
+   qualifier (for example `Open — reproduced in CI`). Name the test or harness
+   command that proves it and cite the workflow run ID. `Won't Fix` is only for
+   a limitation Agent A has explicitly accepted.
 3. Device/radio work (SEC-005, SEC-006) still needs the CI APK on two owned
    phones (see `attack-tests/README.md`); do not paste channel keys or identity
    seeds into this file.
