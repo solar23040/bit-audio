@@ -23,7 +23,8 @@ All evidence below comes from the `build` workflow on `agent-h/phase-2`:
 
 | Run | Commit | Result |
 |---|---|---|
-| [`40208211416`](https://github.com/solar23040/bit-audio/actions/runs/40208211416) | `65d511b` | green: `security-harness`, `security-fuzz`, `Test, lint, build APK` |
+| [`40295667740`](https://github.com/solar23040/bit-audio/actions/runs/40295667740) | `983d189` | green: `security-harness`, `security-fuzz`, `Test, lint, build APK` |
+| [`40208211416`](https://github.com/solar23040/bit-audio/actions/runs/40208211416) | `65d511b` | first fully green full-suite run (same tests, pre-SEC-017 label) |
 
 Jobs:
 
@@ -114,7 +115,7 @@ churn/availability loss. Gets worse if `msg_id` ever becomes predictable
 the victim's sender ID and the baseline's `msg_id` first, then the valid
 baseline. Exactly one valid clip may arrive.
 
-**CI result (run `40208211416`):** partially fixed.
+**CI result (run `40295667740`):** partially fixed.
 `MeshAttackTest > spoofed sender is dropped and never relayed` proves both
 implementations verify the signature **before** inserting into the seen cache,
 so the pre-authentication poisoning path is closed. `MeshAttackTest > known open
@@ -159,7 +160,7 @@ show only the baseline clip; `--include-ttl` must show no amplification/loops.
 `fuzz_packets.py` covers the same fields. Harness assumes the docs layout; see
 `wire.py`.
 
-**CI result (run `40208211416`):** fixed. `ContractVectorTest > docs v1 contract
+**CI result (run `40295667740`):** fixed. `ContractVectorTest > docs v1 contract
 vector verifies with production crypto` proves the committed v1 frames verify
 and open with `:crypto`, and that rewriting `ttl` (relay) keeps both verifications
 valid. `MeshAttackTest > malicious relay mutations are rejected` asserts that
@@ -193,7 +194,7 @@ bound.
 then `fuzz_packets.py --duration 60`. Phase 5 acceptance: 1-hour fuzz run
 without a crash.
 
-**CI result (run `40208211416`):** fixed. `MeshAttackTest > flood and reassembly
+**CI result (run `40295667740`):** fixed. `MeshAttackTest > flood and reassembly
 claims stay bounded and do not block delivery` pushes 2,000 random frames plus
 300 validly signed frames that each claim 256 chunks; both implementations keep
 the partial cache bounded, never relay the hostile traffic, and still deliver a
@@ -230,7 +231,7 @@ from outside the channel (garbage) or by a rogue member (valid high-TTL).
 `--probe-uuid`. Compare valid clip delivery before/during/after; document
 achieved pps vs dropped.
 
-**CI result (run `40208211416`):** partial. `MeshEngine` applies
+**CI result (run `40295667740`):** partial. `MeshEngine` applies
 `RateLimiter` token buckets per neighbour (before decode/crypto) and per
 resolved identity (after verification), configured by `MeshConfig`
 (`perNeighbourRate`, `perSenderRate`). `MeshNode` parses and verifies every
@@ -359,7 +360,7 @@ cases.
 `--mode rewrite-ts`; sent message must be delivered exactly once. Unit tests:
 restart persistence, epoch rotation, clock jump forward/back, counter reuse.
 
-**CI result (run `40208211416`):** fixed. `MeshAttackTest > replayed frame is
+**CI result (run `40295667740`):** fixed. `MeshAttackTest > replayed frame is
 delivered once and relayed once` sends the identical frame twice and asserts
 exactly one delivery at the first hop, one relayed copy and one delivery at the
 far node, for both implementations. Both implementations key counter state by
@@ -466,7 +467,7 @@ field tests. Phase 5 acceptance requires a 1-hour fuzz run without a crash.
 
 **Verification:** CI workflow contains the job and a failure blocks merge.
 
-**CI result (run `40208211416`):** fixed for the JVM parser. The `security-fuzz`
+**CI result (run `40295667740`):** fixed for the JVM parser. The `security-fuzz`
 job runs `PacketDecodeFuzzTest` (90 s per mesh implementation,
 `SECURITY_FUZZ_SECONDS`) plus the structure-aware Python fuzzer against a dry
 sink, on every push. The 1-hour nightly soak remains a Phase 5 acceptance item;
@@ -551,7 +552,7 @@ TTL stays outside both the signature and the AAD, so a relay can decrement it
 without re-signing; everything else (`version`, `type`, `msg_id`, `channel_id`,
 `sender_id`, `chunk_idx`, `total_chunks`, `timestamp_ms`, `counter`) is bound.
 
-**Evidence (run `40208211416`):**
+**Evidence (run `40295667740`):**
 
 - `security/ci` Python steps: `contract_vector.py --check`, `selfcheck.py` and
   `test_mesh_contract.py` pass against `security/contract-vectors.json`.
