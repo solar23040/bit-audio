@@ -197,9 +197,10 @@ without a crash.
 claims stay bounded and do not block delivery` pushes 2,000 random frames plus
 300 validly signed frames that each claim 256 chunks; both implementations keep
 the partial cache bounded, never relay the hostile traffic, and still deliver a
-final valid clip. `PacketDecodeFuzzTest` runs 250k+ mutated/truncated/oversized
-frames per implementation for 90 s each without a crash or a lost follow-up
-delivery. The remaining Phase 5 item is the 1-hour nightly run, not a code fix.
+final valid clip. `PacketDecodeFuzzTest` runs 250,000 mutated/truncated/oversized
+frames per implementation (≈2,800/s) for 90 s each without a crash or a lost
+follow-up delivery. The remaining Phase 5 item is the 1-hour nightly run, not a
+code fix.
 
 ---
 
@@ -219,7 +220,7 @@ from outside the channel (garbage) or by a rogue member (valid high-TTL).
 **Recommendation:**
 
 1. Token bucket per BLE neighbour: 20 frames/s, burst 40; global 100 frames/s.
-2. Clamp ingress TTL to 5 (accept 1..16, forward `ttl-1`); drop TTL 0.
+2. Accept TTL `1..8`, drop `0` or larger; forward `ttl - 1` (default 5).
 3. Bounded relay queue; explicit drop policy (oldest first) instead of blocking.
 4. Verify-rate limit per claimed sender and globally (signature verification is
    the expensive step).
@@ -334,8 +335,8 @@ channel rotation (Agent F's "rotate identity" is not the same thing).
 
 **Severity:** Medium · **Status:** Fixed — verified in CI · **Owner:** E + D
 
-The docs reject timestamps older than 24 h or >5 min in the future, cache
-completed `msg_id`s, and cache `(channel_id, identity, counter) -> msg_id`.
+The docs reject timestamps older than 24 h or more than 120 s in the future,
+cache completed `msg_id`s, and cache `(channel_id, identity, counter) -> msg_id`.
 They explicitly allow late messages with a new `msg_id` to keep
 store-and-forward working. The residual risk is implementation:
 
@@ -361,11 +362,12 @@ restart persistence, epoch rotation, clock jump forward/back, counter reuse.
 **CI result (run `40208211416`):** fixed. `MeshAttackTest > replayed frame is
 delivered once and relayed once` sends the identical frame twice and asserts
 exactly one delivery at the first hop, one relayed copy and one delivery at the
-far node, for both implementations. Counter state in both is keyed by
-`(channel_id, resolved identity, counter) -> msg_id` and checked after signature
-verification; a counter mapped to a different `msg_id` is rejected by the
-`malicious relay mutations` case. `MeshNode` still accepts `counter = 0`, which
-is tracked separately as SEC-017.
+far node, for both implementations. Both implementations key counter state by
+`(channel_id, resolved identity, counter) -> msg_id` and check it after signature
+verification and AEAD open; a frame with a rewritten timestamp is dropped by the
+`malicious relay mutations` case. Reusing a counter with a different `msg_id` is
+rejected by the same mapping but has no dedicated attack case yet. `MeshNode`
+still accepts `counter = 0`, tracked separately as SEC-017.
 
 ---
 
