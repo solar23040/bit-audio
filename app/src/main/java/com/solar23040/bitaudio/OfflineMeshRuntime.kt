@@ -1,5 +1,6 @@
 package com.solar23040.bitaudio
 
+import com.solar23040.bitaudio.mesh.MeshMessage
 import com.solar23040.bitaudio.transport.MeshRuntime
 
 /**
@@ -17,4 +18,12 @@ class OfflineMeshRuntime : MeshRuntime {
     override fun stop() = Unit
 
     override fun setScanning(enabled: Boolean) = Unit
+
+    /** Nothing is listening, so notes stay Queued until a real mesh is wired in. */
+    override suspend fun publish(channelId: String, payload: ByteArray): Boolean = false
+
+    override fun onMessage(callback: (MeshMessage) -> Unit): AutoCloseable =
+        AutoCloseable { }
+
+    override fun onReady(callback: () -> Unit): AutoCloseable = AutoCloseable { }
 }

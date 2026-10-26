@@ -11,6 +11,7 @@ import com.meshvoice.transport.BleTransport
 import com.solar23040.bitaudio.data.Channel
 import com.solar23040.bitaudio.data.ChannelRepository
 import com.solar23040.bitaudio.mesh.ChannelId
+import com.solar23040.bitaudio.mesh.MeshMessage
 import com.solar23040.bitaudio.mesh.node.FilePacketStore
 import com.solar23040.bitaudio.mesh.node.MeshChannel
 import com.solar23040.bitaudio.mesh.node.MeshConfig
@@ -23,16 +24,17 @@ import kotlinx.coroutines.launch
 import java.io.Closeable
 import java.io.File
 import java.util.Base64
+import java.util.concurrent.CopyOnWriteArrayList
 
 /**
  * Real mesh runtime: `BleTransport` below, [MeshNode] above, with the app's
  * channel repository kept in sync.
  *
- * [MeshRuntime] stays unchanged; `:app` owns only this glue. Identity/keystore
- * access and the packet store load happen on [scope], never on the main thread.
- * BLE scanning is established by [BleTransport.start]; [setScanning] only
- * ensures the transport is running because pausing the scanner would also drop
- * established GATT links.
+ * [MeshRuntime] is the stable app-facing seam; `:app` owns only this glue.
+ * Identity/keystore access and the packet store load happen on [scope], never on
+ * the main thread. BLE scanning is established by [BleTransport.start];
+ * [setScanning] only ensures the transport is running because pausing the
+ * scanner would also drop established GATT links.
  */
 class BleMeshRuntime(
     context: Context,
@@ -53,6 +55,8 @@ class BleMeshRuntime(
     private val crypto by lazy { DefaultCrypto(IdentityManager(AndroidKeystoreSecretStore(appContext))) }
 
     private val knownChannels = HashMap<String, ChannelSnapshot>()
+    private val messageListeners = CopyOnWriteArrayList<(MeshMessage) -> Unit>()
+    private val readyListeners = CopyOnWriteArrayList<() -> Unit>()
     private var node: MeshNode? = null
     private var startJob: Job? = null
     private var channelJob: Job? = null
@@ -63,7 +67,7 @@ class BleMeshRuntime(
 
     override val isAvailable: Boolean = true
 
-    /** Exposed so the app can publish once the audio pipeline is wired in. */
+    /** Active mesh instance, or null while the service is stopped. */
     val mesh: MeshNode? get() = synchronized(lifecycleLock) { node }
 
     override fun start() {
@@ -88,12 +92,45 @@ class BleMeshRuntime(
                 }
                 node = newNode
                 syncChannels(newNode, channels.channels.value)
+                // Fan every delivery out through the stable listener list so a
+                // service restart does not re-subscribe the UI/pipeline.
+                newNode.onMessage { message -> fanOut(message) }
                 newNode.start()
                 transport.start()
                 channelJob = scope.launch {
                     channels.channels.collect { updated -> syncChannels(newNode, updated) }
                 }
             }
+            notifyReady()
+        }
+    }
+
+    override suspend fun publish(channelId: String, payload: ByteArray): Boolean {
+        val active = synchronized(lifecycleLock) { node } ?: return false
+        return runCatching {
+            active.publish(ChannelId.fromHex(channelId), payload)
+        }.isSuccess
+    }
+
+    override fun onMessage(callback: (MeshMessage) -> Unit): AutoCloseable {
+        messageListeners.add(callback)
+        return AutoCloseable { messageListeners.remove(callback) }
+    }
+
+    override fun onReady(callback: () -> Unit): AutoCloseable {
+        readyListeners.add(callback)
+        return AutoCloseable { readyListeners.remove(callback) }
+    }
+
+    private fun fanOut(message: MeshMessage) {
+        for (listener in messageListeners) {
+            runCatching { listener(message) }
+        }
+    }
+
+    private fun notifyReady() {
+        for (listener in readyListeners) {
+            runCatching { listener() }
         }
     }
 

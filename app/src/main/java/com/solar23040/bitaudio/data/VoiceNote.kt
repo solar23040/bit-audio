@@ -1,6 +1,7 @@
 package com.solar23040.bitaudio.data
 
 import android.content.Context
+import com.solar23040.bitaudio.pipeline.NoteSink
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,8 +16,8 @@ import org.json.JSONObject
 import java.io.File
 
 enum class NoteState {
-    Sending,
     Queued,
+    Sent,
     Delivered,
     Failed,
 }
@@ -37,7 +38,7 @@ data class VoiceNote(
     val createdAt: Long,
 )
 
-class NoteRepository(context: Context, private val scope: CoroutineScope) {
+class NoteRepository(context: Context, private val scope: CoroutineScope) : NoteSink {
     private val file = File(context.filesDir, "notes.json")
     private val mutex = Mutex()
     private val _notes = MutableStateFlow(load())
@@ -51,16 +52,23 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) {
     fun countForChannel(channelId: String): Int =
         _notes.value.count { it.channelId == channelId }
 
-    fun add(note: VoiceNote) {
+    override fun add(note: VoiceNote) {
         _notes.value = _notes.value + note
         persist()
     }
 
-    fun updateState(id: String, state: NoteState) {
+    override fun all(): List<VoiceNote> = _notes.value
+
+    /** Applies a delivery state change and the hop count observed for it. */
+    override fun updateDelivery(id: String, state: NoteState, hopCount: Int) {
         _notes.value = _notes.value.map { note ->
-            if (note.id == id) note.copy(state = state) else note
+            if (note.id == id) note.copy(state = state, hopCount = hopCount) else note
         }
         persist()
+    }
+
+    fun updateState(id: String, state: NoteState) {
+        updateDelivery(id, state, _notes.value.firstOrNull { it.id == id }?.hopCount ?: 0)
     }
 
     /** Removes every note for a deleted channel and returns them so clips can be removed. */
@@ -140,8 +148,6 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) {
         }
         val parsedState = optString("state", NoteState.Queued.name)
             .let { name -> NoteState.entries.firstOrNull { it.name == name } ?: NoteState.Queued }
-            // A crash mid-send leaves Sending behind; the clip is still safely on disk.
-            .let { state -> if (state == NoteState.Sending) NoteState.Queued else state }
         VoiceNote(
             id = getString("id"),
             channelId = getString("channelId"),
