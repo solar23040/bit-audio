@@ -1,6 +1,7 @@
 """Wire format and crypto helpers pinned to ``docs/packet-format.md`` v1.
 
-Header (107 bytes, big-endian):
+Header prefix (43 bytes, big-endian), followed by the signature and one sealed
+chunk:
 
     0   1   version
     1   1   type
@@ -12,18 +13,24 @@ Header (107 bytes, big-endian):
     29  2   total_chunks
     31  8   timestamp_ms
     39  4   counter
-    43  64  signature           Ed25519 over header[ttl=0, sig=0] || payload
-    107 ... payload             fragment of the single sealed message (0..405 B)
+    43  64  signature           Ed25519 over the canonical transcript
+    107 ... payload             one sealed chunk (nonce || ciphertext || tag)
 
-A message is sealed once (nonce || ciphertext+tag, AAD =
-channel_id || msg_id || timestamp_ms || counter) and fragmented into 405-byte
-payloads. Every packet is signed independently. Relays decrement `ttl`, so it
-is deliberately outside the signature; the 1..16 bound and dedup cache contain
-malicious TTL inflation.
+Each chunk is sealed independently. The canonical header is the 43-byte prefix
+with ``ttl`` zeroed; it is used for both the signature and the AEAD AAD:
 
-Keep this module in lockstep with the docs. The Kotlin crypto implementation
-currently derives IDs with different domains/AAD; that drift is tracked as
-SEC-016 in ``security/findings.md``.
+    signing_input = "bit-audio/packet-sign/v1"
+                    || u32be(len(canonical_header))
+                    || canonical_header
+                    || sealed_chunk
+    aad           = "bit-audio/packet-seal/v1" || canonical_header
+
+Relays decrement ``ttl`` on the wire without touching the signature. The 1..8
+bound and the dedup cache contain a malicious node that raises it.
+
+Keep this module in lockstep with the docs. It is the Python side of the
+contract vectors in ``security/contract-vectors.json``; the Kotlin side is
+``mesh/src/test/.../MeshContractSecurityTest.kt``.
 """
 
 from __future__ import annotations
@@ -32,8 +39,9 @@ import hashlib
 import hmac
 import secrets
 import struct
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from nacl.bindings import (
     crypto_aead_xchacha20poly1305_ietf_KEYBYTES,
@@ -41,43 +49,64 @@ from nacl.bindings import (
     crypto_aead_xchacha20poly1305_ietf_decrypt,
     crypto_aead_xchacha20poly1305_ietf_encrypt,
 )
-from nacl.exceptions import CryptoError
+from nacl.exceptions import BadSignatureError, CryptoError
 from nacl.signing import SigningKey, VerifyKey
 
 PROTOCOL_VERSION = 1
+
 TYPE_VOICE_DATA = 0x01
 TYPE_DELIVERY_RECEIPT = 0x02
 TYPE_MEMBER_ANNOUNCE = 0x03
 TYPE_KEY_ROTATE = 0x04
 
-HEADER_BODY = struct.Struct(">BB8s8s8sBHHQI")  # 43 bytes
-HEADER_LEN = 107
-SIG_OFFSET = 43
+HEADER_STRUCT = struct.Struct(">BB8s8s8sBHHQI")  # 43 bytes
+HEADER_PREFIX_LEN = HEADER_STRUCT.size
+SIG_OFFSET = HEADER_PREFIX_LEN
 SIG_LEN = 64
+HEADER_LEN = HEADER_PREFIX_LEN + SIG_LEN  # 107
 TTL_OFFSET = 26
+
 MAX_FRAME = 512
 MAX_PAYLOAD = 405
-MAX_TOTAL_CHUNKS = 162
+MIN_SEALED_PAYLOAD = 40
+MAX_PLAINTEXT_CHUNK = 365
+MIN_TOTAL_CHUNKS = 1
+MAX_TOTAL_CHUNKS = 256
 MAX_REASSEMBLED = 64 * 1024
-MAX_TTL = 16
+
+MIN_TTL = 1
+MAX_TTL = 8
 DEFAULT_TTL = 5
-REASSEMBLY_TIMEOUT_MS = 120_000
-RETENTION_MS = 24 * 3600 * 1000
-FUTURE_SKEW_MS = 5 * 60 * 1000
+FUTURE_SKEW_MS = 120_000
+RETENTION_MS = 24 * 60 * 60 * 1000
 EPOCH_MS = 15 * 60 * 1000
 
 CHANNEL_ID_SIZE = 8
 SENDER_ID_SIZE = 8
 IDENTITY_PUBKEY_SIZE = 32
-COUNTER_MIN = 1
-COUNTER_MAX = 0xFFFFFFFF
 
 CHANNEL_ID_DOMAIN = b"bit-audio/channel-id/v1"
+SENDER_ID_KEY_DOMAIN = b"bit-audio/sender-id-key/v1"
 SENDER_ID_DOMAIN = b"bit-audio/sender-id/v1"
+SIGNING_DOMAIN = b"bit-audio/packet-sign/v1"
+SEAL_DOMAIN = b"bit-audio/packet-seal/v1"
 
 
 class PacketError(ValueError):
-    """A frame cannot be parsed or fails a structural/protocol limit."""
+    """A frame cannot be parsed or violates a protocol limit."""
+
+
+_counter_lock = threading.Lock()
+_next_counter = secrets.randbelow(0xFFFFFFFF - 1) + 1
+
+
+def next_counter() -> int:
+    """Process-wide monotonic counter; the docs forbid reusing one per message."""
+    global _next_counter
+    with _counter_lock:
+        value = _next_counter
+        _next_counter = value % 0xFFFFFFFF + 1
+        return value
 
 
 @dataclass(frozen=True)
@@ -97,7 +126,8 @@ class Packet:
 
     @property
     def header(self) -> bytes:
-        return HEADER_BODY.pack(
+        """The 43-byte wire prefix, including the real TTL."""
+        return HEADER_STRUCT.pack(
             self.version,
             self.type,
             self.msg_id,
@@ -110,29 +140,35 @@ class Packet:
             self.counter,
         )
 
-    def to_bytes(self) -> bytes:
-        return self.header + self.signature + self.payload
+    @property
+    def canonical_header(self) -> bytes:
+        """The header prefix with TTL zeroed; signed and used as AEAD AAD."""
+        header = bytearray(self.header)
+        header[TTL_OFFSET] = 0
+        return bytes(header)
 
     @property
     def signing_input(self) -> bytes:
-        transcript = bytearray(self.header + bytes(SIG_LEN) + self.payload)
-        transcript[TTL_OFFSET] = 0
-        return bytes(transcript)
+        canonical = self.canonical_header
+        return (
+            SIGNING_DOMAIN
+            + struct.pack(">I", len(canonical))
+            + canonical
+            + self.payload
+        )
 
     @property
     def aad(self) -> bytes:
-        return (
-            self.channel_id
-            + self.msg_id
-            + struct.pack(">Q", self.timestamp_ms)
-            + struct.pack(">I", self.counter)
-        )
+        return SEAL_DOMAIN + self.canonical_header
+
+    def to_bytes(self) -> bytes:
+        return self.header + self.signature + self.payload
 
 
 def parse_packet(data: bytes) -> Packet:
     if len(data) < HEADER_LEN:
         raise PacketError(f"truncated frame: {len(data)} < {HEADER_LEN} bytes")
-    body = HEADER_BODY.unpack(data[:HEADER_BODY.size])
+    body = HEADER_STRUCT.unpack(data[:HEADER_PREFIX_LEN])
     return Packet(
         version=body[0],
         type=body[1],
@@ -149,21 +185,29 @@ def parse_packet(data: bytes) -> Packet:
     )
 
 
-def signing_input(
+def header_bytes(
     *,
-    version: int,
-    type_: int,
+    version: int = PROTOCOL_VERSION,
+    type_: int = TYPE_VOICE_DATA,
     msg_id: bytes,
     channel_id: bytes,
     sender_id: bytes,
-    ttl: int,
-    chunk_idx: int,
-    total_chunks: int,
-    timestamp_ms: int,
-    counter: int,
-    payload: bytes,
+    ttl: int = DEFAULT_TTL,
+    chunk_idx: int = 0,
+    total_chunks: int = 1,
+    timestamp_ms: int | None = None,
+    counter: int = 1,
 ) -> bytes:
-    header = HEADER_BODY.pack(
+    """Pack the 43-byte header prefix. For fuzzers and malformed frames."""
+    if len(msg_id) != 8:
+        raise ValueError("msg_id must be 8 bytes")
+    if len(channel_id) != CHANNEL_ID_SIZE:
+        raise ValueError("channel_id must be 8 bytes")
+    if len(sender_id) != SENDER_ID_SIZE:
+        raise ValueError("sender_id must be 8 bytes")
+    if timestamp_ms is None:
+        timestamp_ms = now_ms()
+    return HEADER_STRUCT.pack(
         version,
         type_,
         msg_id,
@@ -175,9 +219,6 @@ def signing_input(
         timestamp_ms,
         counter,
     )
-    transcript = bytearray(header + bytes(SIG_LEN) + payload)
-    transcript[TTL_OFFSET] = 0
-    return bytes(transcript)
 
 
 def build_packet(
@@ -201,13 +242,20 @@ def build_packet(
         raise ValueError("channel_id must be 8 bytes")
     if len(sender_id) != SENDER_ID_SIZE:
         raise ValueError("sender_id must be 8 bytes")
+    if not 0 <= ttl <= 0xFF:
+        raise ValueError("ttl must fit in u8")
+    if not 0 <= chunk_idx <= 0xFFFF:
+        raise ValueError("chunk_idx must fit in u16")
+    if not 0 <= total_chunks <= 0xFFFF:
+        raise ValueError("total_chunks must fit in u16")
+    if not 0 <= counter <= 0xFFFFFFFF:
+        raise ValueError("counter must fit in u32")
+
     msg_id = msg_id if msg_id is not None else random_id()
     timestamp_ms = timestamp_ms if timestamp_ms is not None else now_ms()
-    if not 0 <= counter <= COUNTER_MAX:
-        raise ValueError("counter must fit in u32")
-    transcript = signing_input(
+    packet = Packet(
         version=version,
-        type_=type_,
+        type=type_,
         msg_id=msg_id,
         channel_id=channel_id,
         sender_id=sender_id,
@@ -216,47 +264,40 @@ def build_packet(
         total_chunks=total_chunks,
         timestamp_ms=timestamp_ms,
         counter=counter,
+        signature=bytes(SIG_LEN),
         payload=payload,
     )
     if signature is not None:
         sig = signature
     elif signing_key is not None:
-        sig = signing_key.sign(transcript).signature
+        sig = signing_key.sign(packet.signing_input).signature
     else:
         sig = bytes(SIG_LEN)
     if len(sig) != SIG_LEN:
         raise ValueError("signature must be 64 bytes")
-    header = HEADER_BODY.pack(
-        version,
-        type_,
-        msg_id,
-        channel_id,
-        sender_id,
-        ttl,
-        chunk_idx,
-        total_chunks,
-        timestamp_ms,
-        counter,
-    )
-    return header + sig + payload
+    return packet.header + sig + payload
 
 
 def seal(key: bytes, plaintext: bytes, aad: bytes, *, nonce: bytes | None = None) -> bytes:
     if len(key) != crypto_aead_xchacha20poly1305_ietf_KEYBYTES:
         raise ValueError("channel key must be 32 bytes")
-    nonce = nonce if nonce is not None else secrets.token_bytes(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+    nonce = (
+        nonce
+        if nonce is not None
+        else secrets.token_bytes(crypto_aead_xchacha20poly1305_ietf_NPUBBYTES)
+    )
     if len(nonce) != crypto_aead_xchacha20poly1305_ietf_NPUBBYTES:
         raise ValueError("nonce must be 24 bytes")
     return nonce + crypto_aead_xchacha20poly1305_ietf_encrypt(plaintext, aad, nonce, key)
 
 
 def open_sealed(key: bytes, payload: bytes, aad: bytes) -> bytes:
-    if len(payload) < crypto_aead_xchacha20poly1305_ietf_NPUBBYTES + 16:
+    if len(payload) < MIN_SEALED_PAYLOAD:
         raise PacketError("sealed payload too short")
-    nonce = payload[:crypto_aead_xchacha20poly1305_ietf_NPUBBYTES]
-    ct = payload[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES:]
+    nonce = payload[: crypto_aead_xchacha20poly1305_ietf_NPUBBYTES]
+    ciphertext = payload[crypto_aead_xchacha20poly1305_ietf_NPUBBYTES :]
     try:
-        return crypto_aead_xchacha20poly1305_ietf_decrypt(ct, aad, nonce, key)
+        return crypto_aead_xchacha20poly1305_ietf_decrypt(ciphertext, aad, nonce, key)
     except CryptoError as exc:
         raise PacketError("AEAD open failed") from exc
 
@@ -264,16 +305,22 @@ def open_sealed(key: bytes, payload: bytes, aad: bytes) -> bytes:
 def channel_id_for_key(channel_key: bytes) -> bytes:
     if len(channel_key) != crypto_aead_xchacha20poly1305_ietf_KEYBYTES:
         raise ValueError("channel key must be 32 bytes")
-    return hmac.new(channel_key, CHANNEL_ID_DOMAIN, hashlib.sha256).digest()[:CHANNEL_ID_SIZE]
+    return hashlib.sha256(CHANNEL_ID_DOMAIN + channel_key).digest()[:CHANNEL_ID_SIZE]
+
+
+def epoch_for(timestamp_ms: int) -> int:
+    return timestamp_ms // EPOCH_MS
 
 
 def sender_id_for_pubkey(channel_key: bytes, pubkey: bytes, timestamp_ms: int) -> bytes:
-    """Rotating ID per docs/packet-format.md: HMAC(key, domain||pubkey||epoch)."""
+    """Rotating ID per docs v1: HMAC(id_key, domain || pubkey || epoch_u64be)."""
+    if len(channel_key) != crypto_aead_xchacha20poly1305_ietf_KEYBYTES:
+        raise ValueError("channel key must be 32 bytes")
     if len(pubkey) != IDENTITY_PUBKEY_SIZE:
         raise ValueError("identity pubkey must be 32 bytes")
-    epoch = timestamp_ms // EPOCH_MS
-    transcript = SENDER_ID_DOMAIN + pubkey + struct.pack(">Q", epoch)
-    return hmac.new(channel_key, transcript, hashlib.sha256).digest()[:SENDER_ID_SIZE]
+    id_key = hmac.new(channel_key, SENDER_ID_KEY_DOMAIN, hashlib.sha256).digest()
+    transcript = SENDER_ID_DOMAIN + pubkey + struct.pack(">Q", epoch_for(timestamp_ms))
+    return hmac.new(id_key, transcript, hashlib.sha256).digest()[:SENDER_ID_SIZE]
 
 
 def build_voice_message(
@@ -281,49 +328,68 @@ def build_voice_message(
     channel_key: bytes,
     signing_key: SigningKey,
     plaintext: bytes,
+    sender_id: bytes | None = None,
+    chunk_size: int = MAX_PLAINTEXT_CHUNK,
     ttl: int = DEFAULT_TTL,
     timestamp_ms: int | None = None,
     msg_id: bytes | None = None,
     counter: int | None = None,
-    sender_id: bytes | None = None,
-    nonce: bytes | None = None,
+    nonces: list[bytes] | None = None,
 ) -> tuple[bytes, list[bytes]]:
-    """Build a sealed, signed, fragmented voice message per the v1 format.
+    """Build a sealed, signed, chunked voice message per the v1 format.
 
-    ``nonce`` is only for deterministic contract vectors/self-checks; omit it in
-    tests that emulate a real sender.
+    ``nonces`` is only for deterministic contract vectors/self-checks. Omit it
+    in tests that emulate a real sender.
     """
+    if not 1 <= chunk_size <= MAX_PLAINTEXT_CHUNK:
+        raise ValueError(f"chunk_size must be 1..{MAX_PLAINTEXT_CHUNK}")
     channel_id = channel_id_for_key(channel_key)
     msg_id = msg_id if msg_id is not None else random_id()
     timestamp_ms = timestamp_ms if timestamp_ms is not None else now_ms()
-    counter = counter if counter is not None else secrets.randbelow(COUNTER_MAX - 1) + COUNTER_MIN
+    counter = counter if counter is not None else next_counter()
     pubkey = signing_key.verify_key.encode()
-    sender_id = sender_id if sender_id is not None else sender_id_for_pubkey(
-        channel_key, pubkey, timestamp_ms
+    sender_id = (
+        sender_id
+        if sender_id is not None
+        else sender_id_for_pubkey(channel_key, pubkey, timestamp_ms)
     )
-    aad = channel_id + msg_id + struct.pack(">Q", timestamp_ms) + struct.pack(">I", counter)
-    sealed = seal(channel_key, plaintext, aad, nonce=nonce)
-    if len(sealed) > MAX_REASSEMBLED:
-        raise ValueError(f"sealed message {len(sealed)} B exceeds {MAX_REASSEMBLED} B")
-    chunks = [sealed[i : i + MAX_PAYLOAD] for i in range(0, len(sealed), MAX_PAYLOAD)]
-    total = len(chunks)
-    if not 1 <= total <= MAX_TOTAL_CHUNKS:
-        raise ValueError(f"total_chunks {total} outside 1..{MAX_TOTAL_CHUNKS}")
-    frames = [
-        build_packet(
+    if len(sender_id) != SENDER_ID_SIZE:
+        raise ValueError("sender_id must be 8 bytes")
+
+    chunks = [plaintext[i : i + chunk_size] for i in range(0, len(plaintext), chunk_size)]
+    if not chunks:
+        chunks = [b""]
+    if not MIN_TOTAL_CHUNKS <= len(chunks) <= MAX_TOTAL_CHUNKS:
+        raise ValueError(f"total_chunks {len(chunks)} outside 1..{MAX_TOTAL_CHUNKS}")
+    if nonces is not None and len(nonces) != len(chunks):
+        raise ValueError("nonces must match the chunk count")
+
+    frames: list[bytes] = []
+    for index, chunk in enumerate(chunks):
+        packet = Packet(
+            version=PROTOCOL_VERSION,
+            type=TYPE_VOICE_DATA,
+            msg_id=msg_id,
             channel_id=channel_id,
             sender_id=sender_id,
-            payload=chunk,
-            signing_key=signing_key,
-            msg_id=msg_id,
             ttl=ttl,
             chunk_idx=index,
-            total_chunks=total,
+            total_chunks=len(chunks),
             timestamp_ms=timestamp_ms,
             counter=counter,
+            signature=bytes(SIG_LEN),
+            payload=b"",
         )
-        for index, chunk in enumerate(chunks)
-    ]
+        sealed = seal(
+            channel_key,
+            chunk,
+            packet.aad,
+            nonce=nonces[index] if nonces is not None else None,
+        )
+        if len(sealed) > MAX_PAYLOAD:
+            raise ValueError(f"sealed chunk {len(sealed)} > {MAX_PAYLOAD} bytes")
+        signature = signing_key.sign(replace(packet, payload=sealed).signing_input).signature
+        frames.append(packet.header + signature + sealed)
     return msg_id, frames
 
 
@@ -331,24 +397,65 @@ def verify_packet(packet: Packet, pubkey: bytes) -> bool:
     try:
         VerifyKey(pubkey).verify(packet.signing_input, packet.signature)
         return True
-    except Exception:
+    except (BadSignatureError, ValueError):
         return False
 
 
-def reassemble(frames: list[bytes], channel_key: bytes) -> bytes:
-    """Verify structure and decrypt a complete message. Signature check is separate."""
+def validate_frame(frame: bytes, *, now: int | None = None) -> str | None:
+    """Return a rejection reason if the frame violates the v1 limits.
+
+    Structural checks only; roster resolution, signature verification, replay
+    and dedup are stateful and belong to the caller.
+    """
+    if len(frame) < HEADER_LEN:
+        return f"frame too short ({len(frame)} < {HEADER_LEN})"
+    if len(frame) > MAX_FRAME:
+        return f"frame too large ({len(frame)} > {MAX_FRAME})"
+    packet = parse_packet(frame)
+    if packet.version != PROTOCOL_VERSION:
+        return f"bad version {packet.version}"
+    if not MIN_TTL <= packet.ttl <= MAX_TTL:
+        return f"ttl {packet.ttl} outside {MIN_TTL}..{MAX_TTL}"
+    if not MIN_TOTAL_CHUNKS <= packet.total_chunks <= MAX_TOTAL_CHUNKS:
+        return f"total_chunks {packet.total_chunks} outside {MIN_TOTAL_CHUNKS}..{MAX_TOTAL_CHUNKS}"
+    if not 0 <= packet.chunk_idx < packet.total_chunks:
+        return f"chunk_idx {packet.chunk_idx} >= total_chunks {packet.total_chunks}"
+    if len(packet.payload) > MAX_PAYLOAD:
+        return f"chunk payload {len(packet.payload)} > {MAX_PAYLOAD}"
+    if len(packet.payload) < MIN_SEALED_PAYLOAD:
+        return f"sealed chunk {len(packet.payload)} < {MIN_SEALED_PAYLOAD}"
+    if packet.counter < 1:
+        return "counter == 0"
+    if now is not None:
+        if packet.timestamp_ms > now + FUTURE_SKEW_MS:
+            return "timestamp too far in the future"
+        if packet.timestamp_ms < now - RETENTION_MS:
+            return "timestamp older than retention"
+    return None
+
+
+def reassemble(
+    frames: list[bytes],
+    channel_key: bytes,
+    *,
+    signer_public_key: bytes | None = None,
+    now: int | None = None,
+) -> bytes:
+    """Validate, verify, decrypt and join all chunks of one message."""
     if not frames:
         raise PacketError("no frames")
     packets: list[Packet] = []
     for frame in frames:
-        reason = validate_frame(frame)
+        reason = validate_frame(frame, now=now)
         if reason is not None:
             raise PacketError(reason)
         packets.append(parse_packet(frame))
     first = packets[0]
     for packet in packets[1:]:
         if (
-            packet.channel_id != first.channel_id
+            packet.version != first.version
+            or packet.type != first.type
+            or packet.channel_id != first.channel_id
             or packet.msg_id != first.msg_id
             or packet.sender_id != first.sender_id
             or packet.timestamp_ms != first.timestamp_ms
@@ -356,38 +463,20 @@ def reassemble(frames: list[bytes], channel_key: bytes) -> bytes:
             or packet.total_chunks != first.total_chunks
         ):
             raise PacketError("mismatched shared header fields")
-    indexes = [packet.chunk_idx for packet in packets]
-    if sorted(indexes) != list(range(first.total_chunks)):
+    indexes = sorted(packet.chunk_idx for packet in packets)
+    if indexes != list(range(first.total_chunks)):
         raise PacketError("incomplete or duplicate chunks")
-    sealed = b"".join(packet.payload for packet in sorted(packets, key=lambda p: p.chunk_idx))
-    if len(sealed) > MAX_REASSEMBLED:
+    if sum(len(packet.payload) for packet in packets) > MAX_REASSEMBLED:
         raise PacketError("reassembled message too large")
-    return open_sealed(channel_key, sealed, first.aad)
 
-
-def validate_frame(frame: bytes) -> str | None:
-    """Return a rejection reason if the frame violates the v1 limits."""
-    if len(frame) < HEADER_LEN:
-        return f"frame too short ({len(frame)} < {HEADER_LEN})"
-    if len(frame) > MAX_FRAME:
-        return f"frame too large ({len(frame)} > {MAX_FRAME})"
-    try:
-        packet = parse_packet(frame)
-    except PacketError as exc:
-        return str(exc)
-    if packet.version != PROTOCOL_VERSION:
-        return f"bad version {packet.version}"
-    if not 1 <= packet.ttl <= MAX_TTL:
-        return f"ttl {packet.ttl} outside 1..{MAX_TTL}"
-    if not 1 <= packet.total_chunks <= MAX_TOTAL_CHUNKS:
-        return f"total_chunks {packet.total_chunks} outside 1..{MAX_TOTAL_CHUNKS}"
-    if not 0 <= packet.chunk_idx < packet.total_chunks:
-        return f"chunk_idx {packet.chunk_idx} >= total_chunks {packet.total_chunks}"
-    if len(packet.payload) > MAX_PAYLOAD:
-        return f"chunk payload {len(packet.payload)} > {MAX_PAYLOAD}"
-    if packet.counter < COUNTER_MIN:
-        return "counter == 0"
-    return None
+    plaintext = bytearray()
+    for packet in sorted(packets, key=lambda item: item.chunk_idx):
+        if signer_public_key is not None and not verify_packet(packet, signer_public_key):
+            raise PacketError("signature verification failed")
+        plaintext.extend(open_sealed(channel_key, packet.payload, packet.aad))
+        if len(plaintext) > MAX_REASSEMBLED:
+            raise PacketError("reassembled message too large")
+    return bytes(plaintext)
 
 
 def random_id() -> bytes:
@@ -409,11 +498,12 @@ def from_hex(text: str) -> bytes:
 
 def frame_summary(frame: bytes) -> str:
     try:
-        p = parse_packet(frame)
+        packet = parse_packet(frame)
     except PacketError as exc:
         return f"{len(frame)}B unparseable ({exc})"
     return (
-        f"{len(frame)}B channel={p.channel_id.hex()} msg={p.msg_id.hex()} "
-        f"sender={p.sender_id.hex()} ttl={p.ttl} chunk={p.chunk_idx}/{p.total_chunks} "
-        f"ts={p.timestamp_ms} counter={p.counter}"
+        f"{len(frame)}B channel={packet.channel_id.hex()} msg={packet.msg_id.hex()} "
+        f"sender={packet.sender_id.hex()} ttl={packet.ttl} "
+        f"chunk={packet.chunk_idx}/{packet.total_chunks} "
+        f"ts={packet.timestamp_ms} counter={packet.counter}"
     )

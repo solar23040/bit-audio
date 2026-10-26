@@ -2,19 +2,16 @@
 """Malicious-relay tamper tests: modify one frame of an otherwise valid message.
 
 Prerequisite: the harness identity must be a member of a dedicated test channel
-(its pubkey enrolled in the app). Then the baseline must be accepted; every
-non-TTL mutation must be dropped, because the signed header and payload cannot
+(its pubkey/sender_id enrolled in the app). Then the baseline must be accepted;
+every mutation must be dropped, because an authenticated header/payload cannot
 be changed without the sender's key.
-
-TTL is deliberately outside the signature, so TTL-only mutations are skipped
-unless --include-ttl is given; they test the 1..16 clamp and dedup instead.
 
 Modes:
   generated (default)  fresh sealed+signed messages using the harness identity
   --capture-file PATH  mutate a message captured from a real sender (may be
                        rejected by anti-replay before the parser sees it)
 
-The test only proves auth coverage if the baseline is delivered. If the
+The mutation only proves auth coverage if the baseline is delivered. If the
 baseline is missing, enroll the harness identity or use --capture-file.
 """
 
@@ -27,6 +24,9 @@ import secrets
 import sys
 from pathlib import Path
 
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
+
 from captured import group_messages, load_capture, pick_message
 from config import (
     RateLimiter,
@@ -37,16 +37,26 @@ from config import (
     resolve_config,
     setup_logging,
 )
-from mutations import EXPECTATIONS, MUTATIONS, TTL_MUTATIONS, apply
+from mutations import EXPECTATIONS, MUTATIONS, apply
 from sinks import SinkError, make_sink
 from wire import (
     build_voice_message,
     frame_summary,
     from_hex,
     hexs,
+    now_ms,
     parse_packet,
-    verify_packet,
+    sender_id_for_pubkey,
 )
+
+
+def _verifies(frame: bytes, pubkey: bytes) -> bool:
+    try:
+        packet = parse_packet(frame)
+        VerifyKey(pubkey).verify(packet.signing_input, packet.signature)
+        return True
+    except (BadSignatureError, ValueError):
+        return False
 
 
 def _selected_indexes(option: str, frame_count: int) -> list[int]:
@@ -71,9 +81,6 @@ async def run(args: argparse.Namespace) -> int:
     else:
         plaintext = b"Agent H relay " + secrets.token_hex(4).encode() + b" " + secrets.token_bytes(args.size)
 
-    signing_key = None
-    pubkey = None
-    sender_id = None
     if args.capture_file:
         captured = pick_message(group_messages(load_capture(args.capture_file)), args.msg_id, 0)
         base_frames = [item.frame for item in captured]
@@ -81,21 +88,24 @@ async def run(args: argparse.Namespace) -> int:
         baseline_expected = "unclear (captured replay; depends on anti-replay)"
     else:
         signing_key, pubkey = identity_from_config(cfg)
-        sender_id = from_hex(args.sender_id_hex) if args.sender_id_hex else None
-        if sender_id is not None and len(sender_id) != 8:
+        sender_id = (
+            from_hex(args.sender_id_hex)
+            if args.sender_id_hex
+            else sender_id_for_pubkey(cfg.channel_key, pubkey, now_ms())
+        )
+        if len(sender_id) != 8:
             raise SystemExit("--sender-id-hex must be 8 bytes")
         msg_id, base_frames = build_voice_message(
             channel_key=cfg.channel_key,
             signing_key=signing_key,
-            plaintext=plaintext,
             sender_id=sender_id,
+            plaintext=plaintext,
+            chunk_size=args.chunk_size,
         )
         baseline_expected = "delivered (proves the harness identity is accepted)"
 
     selected = _selected_indexes(args.frame_index, len(base_frames))
     mutations = list(MUTATIONS) if args.mutation is None else args.mutation
-    if not args.include_ttl:
-        mutations = [name for name in mutations if name not in TTL_MUTATIONS]
     check_frame_size(base_frames)
 
     sink = make_sink(args, cfg)
@@ -133,29 +143,23 @@ async def run(args: argparse.Namespace) -> int:
                 frames = list(base_frames)
                 case_msg = msg_id
             else:
-                assert signing_key is not None
                 case_msg, frames = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
-                    plaintext=plaintext,
                     sender_id=sender_id,
+                    plaintext=plaintext,
+                    chunk_size=args.chunk_size,
                 )
             rng = random.Random(args.seed + case_index)
             for index in selected:
                 frames[index] = apply(mutation, frames[index], rng)
-            if pubkey is not None and mutation not in TTL_MUTATIONS:
-                for index in selected:
-                    try:
-                        packet = parse_packet(frames[index])
-                    except ValueError:
-                        continue
-                    if verify_packet(packet, pubkey):
-                        print(f"WARN {mutation}: mutated frame still verifies; harness bug", file=sys.stderr)
-                        failures += 1
+            if not args.capture_file and any(_verifies(frames[index], pubkey) for index in selected):
+                print(f"WARN {mutation}: mutated frame still verifies; harness bug", file=sys.stderr)
+                failures += 1
 
             print(
                 f"[relay] {mutation:<20} msg={hexs(case_msg)} "
-                f"frames={len(frames)} expect: {EXPECTATIONS[mutation]}"
+                f"frames={len(frames)} expect: dropped ({EXPECTATIONS[mutation]})"
             )
             for frame in frames:
                 await limiter.wait()
@@ -175,14 +179,8 @@ async def run(args: argparse.Namespace) -> int:
     print(f"sent {sent} frame(s) to {sink.describe()}")
     print(f"baseline: {baseline_expected}")
     print(f"mutations tested: {len(rows)}")
-    if args.include_ttl:
-        print(
-            "EXPECT: non-TTL mutations absent; ttl=6/16 may deliver once (valid by "
-            "design), ttl=0/17/255 absent, and no repeated playback or relay storm."
-        )
-    else:
-        print("EXPECT: only the baseline clip appears; no corrupted/partial playback.")
-    print("Record results in security/findings.md (SEC-001/002/009/016).")
+    print("EXPECT: only the baseline clip appears; no corrupted/partial playback.")
+    print("Record results in security/findings.md (SEC-002, SEC-009).")
     return 0 if failures == 0 else 2
 
 
@@ -195,18 +193,14 @@ def main() -> int:
         "--mutation",
         action="append",
         choices=sorted(MUTATIONS),
-        help="repeatable; default is all non-TTL mutations",
-    )
-    parser.add_argument(
-        "--include-ttl",
-        action="store_true",
-        help="also run signature-preserving TTL mutations (clamp/dedup tests)",
+        help="repeatable; default is all mutations",
     )
     parser.add_argument(
         "--frame-index",
         default="0",
         help="which frame to mutate (integer or 'all', default 0)",
     )
+    parser.add_argument("--chunk-size", type=int, default=96, help="plaintext bytes per frame")
     parser.add_argument("--size", type=int, default=512, help="random payload size for generated messages")
     parser.add_argument("--payload-file", type=Path, help="use a real Opus/audio payload fixture")
     parser.add_argument(

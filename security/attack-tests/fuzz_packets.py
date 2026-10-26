@@ -2,8 +2,8 @@
 """Structure-aware packet fuzzer for the live app or the simulator.
 
 Strategies:
-  mutate     apply one of the targeted mutations to a valid corpus frame
-  random     random/plausible headers with random payloads, 0..512 B
+  mutate     apply one of the 25 targeted mutations to a valid corpus frame
+  random     random length/bytes, half with a plausible header
   boundary   field edge cases (ttl, chunk_idx, total_chunks, ts, version)
   crypto     valid frame with a corrupted sig/nonce/tag/payload
 
@@ -46,12 +46,9 @@ from mutations import MUTATIONS, apply
 from sinks import DryRunSink, SinkError, make_sink
 from wire import (
     HEADER_LEN,
-    MAX_FRAME,
-    MAX_PAYLOAD,
-    MAX_TOTAL_CHUNKS,
-    MAX_TTL,
     build_packet,
     build_voice_message,
+    header_bytes,
     now_ms,
     parse_packet,
     random_id,
@@ -69,46 +66,48 @@ def make_corpus(channel_key: bytes, count: int = 8) -> list[bytes]:
         _, message = build_voice_message(
             channel_key=channel_key,
             signing_key=key,
-            plaintext=secrets.token_bytes(300 + index * 40),
             sender_id=sender,
+            plaintext=secrets.token_bytes(300 + index * 40),
+            chunk_size=96,
         )
         frames.extend(message)
     return frames[:count]
 
 
 def gen_random(rng: random.Random) -> bytes:
-    if rng.random() < 0.5:
-        length = rng.choice([0, 1, 15, 30, 42, 63, 106, 107, 120, 240, 405, 512])
-        return rng.randbytes(length)
-    return build_packet(
-        channel_id=rng.randbytes(8),
-        sender_id=rng.randbytes(8),
-        payload=rng.randbytes(rng.randrange(0, MAX_PAYLOAD + 1)),
-        version=rng.choice([1, 1, 0, 2, 255]),
-        type_=rng.randrange(256),
-        msg_id=rng.randbytes(8),
-        ttl=rng.choice([0, 1, 5, MAX_TTL, MAX_TTL + 1, 255]),
-        chunk_idx=rng.randrange(0, 65536),
-        total_chunks=rng.choice([0, 1, 2, MAX_TOTAL_CHUNKS, MAX_TOTAL_CHUNKS + 1, 65535]),
-        timestamp_ms=rng.choice([0, 1, now_ms(), 2**63, 2**64 - 1]),
-        counter=rng.choice([0, 1, rng.randrange(1, 2**32), 0xFFFFFFFF]),
-    )
+    length = rng.choice([0, 1, 15, 30, 42, 63, 106, 107, 120, 147, 300, 405, 512, 900, 1500])
+    if rng.random() < 0.5 and length >= HEADER_LEN:
+        header = header_bytes(
+            version=rng.choice([1, 1, 0, 255]),
+            type_=rng.randrange(256),
+            msg_id=rng.randbytes(8),
+            channel_id=rng.randbytes(8),
+            sender_id=rng.randbytes(8),
+            ttl=rng.randrange(256),
+            chunk_idx=rng.randrange(65536),
+            total_chunks=rng.choice([0, 1, 2, 255, 256, 257, 65535]),
+            timestamp_ms=rng.choice([0, now_ms(), 2**64 - 1]),
+        )
+        return (header + rng.randbytes(max(0, length - HEADER_LEN)))[:length]
+    return rng.randbytes(length)
 
 
 def gen_boundary(rng: random.Random) -> bytes:
-    total = rng.choice([0, 1, 2, MAX_TOTAL_CHUNKS, MAX_TOTAL_CHUNKS + 1, 65535])
-    return build_packet(
-        channel_id=rng.randbytes(8),
-        sender_id=rng.randbytes(8) if rng.random() < 0.9 else bytes(8),
-        payload=rng.randbytes(rng.choice([0, 1, 40, MAX_PAYLOAD])),
-        version=rng.choice([1, 0, 2, 255]),
-        type_=rng.choice([0, 1, 255]),
-        msg_id=rng.randbytes(8),
-        ttl=rng.choice([0, 1, 5, MAX_TTL, MAX_TTL + 1, 255]),
-        chunk_idx=rng.choice([0, 1, 255, 256, 65534, 65535]),
-        total_chunks=total,
-        timestamp_ms=rng.choice([0, 1, now_ms(), 2**63, 2**64 - 1]),
-        counter=rng.choice([0, 1, rng.randrange(1, 2**32), 0xFFFFFFFF]),
+    total = rng.choice([0, 1, 2, 255, 256, 257, 65535])
+    return (
+        header_bytes(
+            version=rng.choice([1, 0, 2, 255]),
+            type_=rng.choice([0, 1, 255]),
+            msg_id=rng.randbytes(8),
+            channel_id=rng.randbytes(8),
+            sender_id=rng.randbytes(8) if rng.random() < 0.9 else bytes(8),
+            ttl=rng.choice([0, 1, 5, 6, 8, 9, 255]),
+            chunk_idx=rng.choice([0, 1, 255, 256, 65534, 65535]),
+            total_chunks=total,
+            timestamp_ms=rng.choice([0, 1, now_ms(), 2**63, 2**64 - 1]),
+        )
+        + rng.randbytes(64)
+        + rng.randbytes(rng.choice([0, 1, 16, 40, 200, 405]))
     )
 
 
@@ -120,11 +119,11 @@ def gen_crypto(rng: random.Random, corpus: list[bytes]) -> bytes:
     if target == "sig":
         index = rng.randrange(43, 107)
     elif target == "nonce":
-        index = rng.randrange(HEADER_LEN, min(HEADER_LEN + 24, len(frame)))
+        index = rng.randrange(107, min(131, len(frame)))
     elif target == "tag":
         index = len(frame) - 1
     elif target == "payload":
-        index = rng.randrange(HEADER_LEN, len(frame))
+        index = rng.randrange(107, len(frame))
     else:
         return bytes(frame[: rng.randrange(0, len(frame))])
     frame[index] ^= 1 << rng.randrange(8)
@@ -157,13 +156,10 @@ def self_check(iterations: int) -> int:
         return 2
     counts: Counter[str] = Counter()
     structurally_valid = 0
-    too_large = 0
     for index in range(iterations):
         strategy = STRATEGIES[index % len(STRATEGIES)]
         frame = generate(strategy, rng, corpus)
         counts[strategy] += 1
-        if len(frame) > MAX_FRAME:
-            too_large += 1
         try:
             parse_packet(frame)
         except ValueError:
@@ -171,18 +167,19 @@ def self_check(iterations: int) -> int:
         if validate_frame(frame) is None:
             structurally_valid += 1
 
+    # Every mutation must produce a different frame.
     changed = 0
     for name in MUTATIONS:
         source = corpus[0]
         mutated = apply(name, source, random.Random(7))
         if mutated != source:
             changed += 1
-        else:
+        if mutated == source:
             print(f"self-check FAIL: mutation {name} did not change the frame", file=sys.stderr)
             return 2
 
     print(f"self-check ok: {iterations} generated frames, strategies={dict(counts)}")
-    print(f"  structurally valid: {structurally_valid}, oversized: {too_large}")
+    print(f"  structurally valid: {structurally_valid}")
     print(f"  mutations that changed the frame: {changed}/{len(MUTATIONS)}")
     print("  parser raised no unexpected exceptions")
     return 0
@@ -198,7 +195,7 @@ def _artifact(report: dict[str, object], case: dict[str, object], out_dir: Path)
 async def run(args: argparse.Namespace) -> int:
     if args.sink == "dry":
         cfg = None
-        limits = Limits(max_pps=args.rate or 20, max_frames=100_000)
+        limits = Limits(max_pps=args.rate or 20, max_frames=2000)
         sink = DryRunSink(verbose=args.verbose, max_print=0)
         rate = float(args.rate or 20)
     else:

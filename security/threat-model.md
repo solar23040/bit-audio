@@ -1,14 +1,13 @@
 # Threat Model — Mesh Voice Notes
 
-Status: v0.2 (design review; Phase 0 contracts landed, mesh not implemented)
+Status: v0.3 (mesh + crypto implemented; attack suite runs in CI on `FakeNetwork`)
 Owner: Agent H (Security)
-Last updated: 2026-10-25
+Last updated: 2026-10-26
 Related: [`findings.md`](findings.md), [`attack-tests/README.md`](attack-tests/README.md), [`../pllan.md`](../pllan.md), [`../docs/packet-format.md`](../docs/packet-format.md), [`../docs/interfaces.md`](../docs/interfaces.md)
 
-> **Contract warning:** `:crypto` currently derives channel/sender IDs and the
-> signing/AAD bytes differently from `docs/packet-format.md` v1. The docs are
-> authoritative per `AGENTS.md`; see findings **SEC-016** before building or
-> testing wire code. The attack harness follows the docs.
+> **Contract status:** `docs/packet-format.md` v1, `:crypto` and the committed
+> vector now agree; SEC-016 is fixed and verified in CI. The attack harness and
+> tests build frames byte-for-byte from the docs.
 
 ---
 

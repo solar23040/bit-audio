@@ -5,7 +5,7 @@ Prepare a capture with capture.py while a peer sends a clip that the target
 actually receives. Then:
 
   replay        resend the exact frames (must not play twice)
-  rewrite-ts    change ts_ms to now (signature must fail; replay window bypass)
+  rewrite-ts    change timestamp_ms to now (signature must fail; replay window bypass)
   swap-chunks   swap chunk_idx of two frames (signature/AEAD must fail)
 """
 
@@ -83,7 +83,7 @@ async def run(args: argparse.Namespace) -> int:
         for item in message:
             packet = replace(parse_packet(item.frame), timestamp_ms=now_ms())
             if signing_key is not None:
-                packet = replace(packet, sig=signing_key.sign(packet.signing_input).signature)
+                packet = replace(packet, signature=signing_key.sign(packet.signing_input).signature)
             outgoing.append(packet.to_bytes())
         print(
             "EXPECT: frames dropped (signature / replay window). "
