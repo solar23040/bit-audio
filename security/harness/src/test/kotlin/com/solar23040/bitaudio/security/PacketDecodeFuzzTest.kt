@@ -13,7 +13,7 @@ import org.junit.Test
  * and bit-flipped frames into the real `:mesh` receive path and proves the node
  * still decodes and delivers a valid clip afterwards.
  *
- * The wall-clock budget comes from `SECURITY_FUZZ_SECONDS` (CI sets 90 s per
+ * The wall-clock budget comes from `SECURITY_FUZZ_SECONDS` (CI sets 60 s per
  * implementation; the default keeps a local run short).
  */
 class PacketDecodeFuzzTest {

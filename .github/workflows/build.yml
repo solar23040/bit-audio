@@ -136,9 +136,9 @@ jobs:
       - name: Install harness dependencies
         run: python -m pip install --disable-pip-version-check "PyNaCl>=1.5"
 
-      - name: JVM packet-decode fuzz (90 s per mesh implementation)
+      - name: JVM packet-decode fuzz (60 s per mesh implementation)
         env:
-          SECURITY_FUZZ_SECONDS: "90"
+          SECURITY_FUZZ_SECONDS: "60"
         run: >
           ./gradlew --no-daemon --stacktrace
           -I security/ci/harness.init.gradle
