@@ -88,6 +88,7 @@ internal object NearbyWire {
     private const val SIGNATURE_SIZE = Ed25519.SIGNATURE_SIZE
     private const val DOMAIN = "bit-audio/nearby-frame/v1"
     private const val EPOCH_DOMAIN = "bit-audio/nearby-epoch/v1"
+    private val DOMAIN_BYTES = DOMAIN.toByteArray(Charsets.US_ASCII)
 
     fun epochSeed(stableSeed: ByteArray, channelKey: ByteArray, epoch: Long): ByteArray {
         val mac = Mac.getInstance("HmacSHA256")
@@ -151,11 +152,13 @@ internal object NearbyWire {
     )
 
     fun decode(frame: ByteArray, channelKey: ByteArray): NearbyFrame? {
-        if (frame.size < SIGNATURE_SIZE + 35 || frame.size > MAX_FRAME_BYTES) return null
+        val headerSize = DOMAIN_BYTES.size + SIGNATURE_SIZE + 35
+        if (frame.size < headerSize || frame.size > MAX_FRAME_BYTES) return null
         val signed = frame.copyOfRange(0, frame.size - SIGNATURE_SIZE)
         val signature = frame.copyOfRange(frame.size - SIGNATURE_SIZE, frame.size)
         return try {
-            val reader = Reader(signed)
+            if (!signed.copyOfRange(0, DOMAIN_BYTES.size).contentEquals(DOMAIN_BYTES)) return null
+            val reader = Reader(signed.copyOfRange(DOMAIN_BYTES.size, signed.size))
             if (reader.u8() != VERSION) return null
             val type = reader.u8()
             if (type != TYPE_VOICE && type != TYPE_ANNOUNCE) return null
