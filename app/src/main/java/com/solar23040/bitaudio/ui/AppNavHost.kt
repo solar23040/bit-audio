@@ -1,19 +1,22 @@
 package com.solar23040.bitaudio.ui
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.solar23040.bitaudio.AppGraph
-import com.solar23040.bitaudio.ui.screens.ChannelListScreen
 import com.solar23040.bitaudio.ui.screens.ChannelScreen
+import com.solar23040.bitaudio.ui.screens.HomeScreen
 import com.solar23040.bitaudio.ui.screens.JoinChannelScreen
+import com.solar23040.bitaudio.ui.screens.OnboardingScreen
 import com.solar23040.bitaudio.ui.screens.SettingsScreen
 
 private object Routes {
-    const val CHANNELS = "channels"
+    const val ONBOARDING = "onboarding"
+    const val HOME = "home"
     const val JOIN = "join"
     const val SETTINGS = "settings"
     const val CHANNEL = "channel/{channelId}"
@@ -25,10 +28,24 @@ private object Routes {
 @Composable
 fun AppNavHost(graph: AppGraph) {
     val navController = rememberNavController()
+    val start = remember {
+        if (graph.settings.current.onboarded) Routes.HOME else Routes.ONBOARDING
+    }
 
-    NavHost(navController = navController, startDestination = Routes.CHANNELS) {
-        composable(Routes.CHANNELS) {
-            ChannelListScreen(
+    NavHost(navController = navController, startDestination = start) {
+        composable(Routes.ONBOARDING) {
+            OnboardingScreen(
+                graph = graph,
+                onDone = {
+                    navController.navigate(Routes.HOME) {
+                        popUpTo(Routes.ONBOARDING) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+        composable(Routes.HOME) {
+            HomeScreen(
                 graph = graph,
                 onOpenChannel = { channelId -> navController.navigate(Routes.channel(channelId)) },
                 onJoinChannel = { navController.navigate(Routes.JOIN) },

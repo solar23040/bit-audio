@@ -33,6 +33,7 @@ internal object MeshPacketCodec {
 
     const val VERSION = 0x01
     const val TYPE_VOICE_DATA = 0x01
+    const val TYPE_MEMBER_ANNOUNCE = 0x03
 
     const val HEADER_PREFIX_SIZE = 43
     const val SIGNATURE_SIZE = 64
@@ -76,8 +77,8 @@ internal object MeshPacketCodec {
         require(signature.size == SIGNATURE_SIZE) {
             "signature must be $SIGNATURE_SIZE bytes"
         }
-        require(sealedPayload.size in MIN_SEALED_PAYLOAD_SIZE..MAX_SEALED_PAYLOAD_SIZE) {
-            "sealed payload must be in $MIN_SEALED_PAYLOAD_SIZE..$MAX_SEALED_PAYLOAD_SIZE bytes"
+        require(sealedPayload.size in 1..MAX_SEALED_PAYLOAD_SIZE) {
+            "payload must be in 1..$MAX_SEALED_PAYLOAD_SIZE bytes"
         }
 
         val out = ByteArray(HEADER_SIZE + sealedPayload.size)
@@ -89,9 +90,11 @@ internal object MeshPacketCodec {
 
     /** Returns null for any malformed or out-of-contract frame. */
     fun decode(frame: ByteArray): MeshPacket? {
-        if (frame.size < HEADER_SIZE || frame.size > MAX_PACKET_SIZE) return null
+        if (frame.size < HEADER_SIZE + 1 || frame.size > MAX_PACKET_SIZE) return null
         if ((frame[0].toInt() and 0xFF) != VERSION) return null
-        if ((frame[1].toInt() and 0xFF) != TYPE_VOICE_DATA) return null
+
+        val type = frame[1].toInt() and 0xFF
+        if (type != TYPE_VOICE_DATA && type != TYPE_MEMBER_ANNOUNCE) return null
 
         val ttl = frame[TTL_OFFSET].toInt() and 0xFF
         if (ttl !in MIN_TTL..MAX_TTL) return null
@@ -102,10 +105,15 @@ internal object MeshPacketCodec {
         if (chunkIndex >= totalChunks) return null
 
         val sealedSize = frame.size - HEADER_SIZE
-        if (sealedSize !in MIN_SEALED_PAYLOAD_SIZE..MAX_SEALED_PAYLOAD_SIZE) return null
+        if (type == TYPE_VOICE_DATA &&
+            sealedSize !in MIN_SEALED_PAYLOAD_SIZE..MAX_SEALED_PAYLOAD_SIZE
+        ) {
+            return null
+        }
+        if (sealedSize !in 1..MAX_SEALED_PAYLOAD_SIZE) return null
 
         val header = MeshPacketHeader(
-            type = frame[1].toInt() and 0xFF,
+            type = type,
             messageId = frame.copyOfRange(2, 10),
             channelId = ChannelId.fromBytes(frame.copyOfRange(10, 18)),
             senderId = frame.copyOfRange(18, 26),

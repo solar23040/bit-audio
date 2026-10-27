@@ -22,14 +22,15 @@ displayed as lowercase hex.
 | 31 | 8 | `timestamp_ms` | Unix time in milliseconds |
 | 39 | 4 | `counter` | per-message counter, shared by all chunks |
 | 43 | 64 | `signature` | Ed25519 over the canonical transcript |
-| 107 | 1..405 | `payload` | one sealed chunk (`nonce || ciphertext || tag`) |
+| 107 | 1..405 | `payload` | one sealed chunk (`nonce || ciphertext || tag`) or a plaintext announce |
 
 The first 43 bytes (everything before the signature) are the **header prefix**.
 `canonical_header` is a copy of that prefix with `ttl` (byte 26) set to `0x00`.
 
 Maximum packet size is **512 bytes** (`107 + 405`). The frame boundary is the
-packet boundary; there is no length field. Frames shorter than 107 or longer
-than 512 bytes are discarded.
+packet boundary; there is no length field. Frames shorter than 108 or longer
+than 512 bytes are discarded (a `VOICE_DATA` sealed chunk still needs the
+40-byte minimum, so its smallest frame is 147 bytes).
 
 ## Packet types
 
@@ -37,7 +38,7 @@ than 512 bytes are discarded.
 |---:|---|---|
 | `0x01` | `VOICE_DATA` | payload is one sealed chunk of an audio payload |
 | `0x02` | `DELIVERY_RECEIPT` | reserved, Phase 2 |
-| `0x03` | `MEMBER_ANNOUNCE` | reserved for roster sync, Phase 2 |
+| `0x03` | `MEMBER_ANNOUNCE` | nearby presence: nickname + identity key, plaintext but signed |
 | `0x04` | `KEY_ROTATE` | reserved, Phase 5/6 |
 | `0x05..0x7F` | control | reserved |
 | `0x80..0xFF` | private | never emitted by production code |
@@ -54,6 +55,62 @@ channel_id = SHA-256("bit-audio/channel-id/v1" || channel_key)[0..8]
 ```
 
 It is public metadata used for filtering and display; it is not a secret.
+
+### The public nearby channel
+
+Every install has one well-known channel, `NearbyChannel.NAME = "nearby"`:
+
+```
+nearby_key     = SHA-256("bit-audio/nearby-channel-key/v1")          // 32 bytes
+nearby_channel = SHA-256("bit-audio/channel-id/v1" || nearby_key)[0..8]
+```
+
+The key is deliberately public and identical on every install. Voice payloads
+on this channel are signed but **not confidential**: anyone in radio range can
+derive the key and decrypt them. The nearby feed is for public
+push-to-talk only; anything sensitive belongs on a QR/passphrase private
+channel. The channel ID is derived exactly like a QR channel ID so routing and
+filtering need no special cases.
+
+Identity fingerprint (`IdentityFingerprint.of`), shown in the UI:
+
+```
+fingerprint = SHA-256(identity_pubkey)[0..3]        // 6 lowercase hex chars
+```
+
+The fingerprint is not a secret and changes when the identity is rotated.
+
+## MEMBER_ANNOUNCE (`0x03`)
+
+Announcements are sent on the public nearby channel to build the live peer
+list. They are **not sealed**: the nearby key is public, so confidentiality
+would be an illusion. The payload is plaintext and authenticity comes from the
+normal Ed25519 signature over the canonical header and these bytes.
+
+```
+version(1) | identity_pubkey(32) | nickname_len(1) | nickname(n) | capabilities(u32be)
+```
+
+- `version` is `0x01`.
+- `identity_pubkey` is the stable Ed25519 key used to sign the packet.
+- `nickname` is UTF-8, trimmed, control characters stripped, `1..32` bytes.
+  Invalid UTF-8 or a length mismatch drops the packet.
+- `capabilities` currently uses bit 0 voice, bit 1 relay, bit 2 discoverable.
+  Unknown bits are ignored.
+- `message_id` is random, `chunk_idx = 0`, `total_chunks = 1`, and `ttl` is
+  stamped as `2` so direct neighbours plus one relay hear it.
+- A receiver resolves nothing: the payload carries the public key, so it can
+  verify the signature before the sender is known. Unknown signers with a valid
+  signature are simply new peers.
+- Rate-limit accepted announcements per resolved identity (default one every
+  five seconds, burst 2). Drop malformed, unsigned, replayed or over-rate
+  announcements before updating the peer list.
+- `last_seen` is refreshed on every accepted announce. Peers quiet for longer
+  than `peerTimeoutMs` (default 90 s) disappear from the list. Hop count is
+  `announce_ttl - header.ttl + 1`, so a direct neighbour is 1 and a single relay
+  is 2; RSSI is only meaningful for hop 1.
+- Relays decrement `ttl` exactly like voice packets and never re-sign. The
+  announcement must not be sealed or re-encrypted on the way.
 
 Rotating sender ID (`RotatingSenderId.derive`):
 
@@ -108,6 +165,9 @@ sealed_chunk    = nonce(24) || XChaCha20-Poly1305(plaintext_chunk, aad)
   chunk is at least 40 bytes.
 - Plaintext chunk size is at most **365 bytes**, so the sealed chunk fits the
   405-byte payload limit.
+- `MEMBER_ANNOUNCE` is the one exception: its payload is the plaintext layout
+  above and is authenticated only (see that section). Never reuse this rule for
+  `VOICE_DATA`.
 - All chunks share `msg_id`, `channel_id`, `sender_id`, `timestamp_ms`,
   `counter`, and `total_chunks`. `chunk_idx` and the ciphertext differ.
 - The plaintext is the `EncodedAudioClip.toPayload()` blob from `:audio`.
@@ -177,7 +237,7 @@ signature again on dequeue.
 
 Reject without crashing or unbounded allocation:
 
-- frame length < 107 or > 512
+- frame length < 108 or > 512
 - `version != 1` or unknown type
 - `ttl == 0` or `ttl > 8`
 - `total_chunks == 0` or `> 256`
@@ -186,6 +246,8 @@ Reject without crashing or unbounded allocation:
 - signature length != 64 or verification failure
 - unknown `channel_id`, unresolved `sender_id`, or signer not in roster
 - AEAD failure, AAD mismatch, or sealed chunk < 40 bytes
+- `MEMBER_ANNOUNCE` with a bad version, wrong payload length, invalid UTF-8,
+  empty/oversized nickname, or a signature that does not match the carried key
 - duplicate `(channel_id, msg_id, chunk_idx)`
 - counter mapped to a different `msg_id`
 - timestamp outside the future/retention window

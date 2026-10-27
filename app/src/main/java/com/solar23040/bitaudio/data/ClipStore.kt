@@ -8,7 +8,8 @@ import java.util.UUID
 class ClipStore(context: Context) {
     private val directory = File(context.filesDir, DIRECTORY_NAME).apply { mkdirs() }
 
-    fun newFile(): File = File(directory, "${UUID.randomUUID()}.wav")
+    fun newFile(extension: String = "wav"): File =
+        File(directory, "${UUID.randomUUID()}.${extension.ifBlank { "wav" }}")
 
     fun resolve(fileName: String): File? {
         if (fileName.isBlank() || fileName.contains('/') || fileName.contains('\\')) return null

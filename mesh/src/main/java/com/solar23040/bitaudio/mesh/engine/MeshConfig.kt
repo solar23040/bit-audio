@@ -34,10 +34,22 @@ data class MeshConfig(
     val perSenderRate: RateLimit = RateLimit(perSecond = 200.0, burst = 400.0),
     /** Frames accepted per directly connected neighbour, before any crypto. */
     val perNeighbourRate: RateLimit = RateLimit(perSecond = 1000.0, burst = 2000.0),
+    /** TTL stamped on MEMBER_ANNOUNCE packets. The format allows 1..2. */
+    val announceTtl: Int = 2,
+    /** How often a discoverable node re-announces itself. */
+    val announceIntervalMs: Long = 30_000L,
+    /** Quiet peer removed from the nearby list after this long. */
+    val peerTimeoutMs: Long = 90_000L,
+    /** How often expired peers are swept from the nearby list. */
+    val peerSweepIntervalMs: Long = 5_000L,
+    /** ANNOUNCE packets accepted per resolved identity (one every ~5 s). */
+    val announceRate: RateLimit = RateLimit(perSecond = 0.2, burst = 2.0),
     /** Bound on the seen-packet cache. */
     val maxSeenPackets: Int = 20_000,
     /** Bound on simultaneously reassembled messages. */
     val maxPartialMessages: Int = 256,
+    /** Bound on remembered nearby identities (including expired ones). */
+    val maxNearbyPeers: Int = 512,
 ) {
     init {
         require(defaultTtl in 1..8) { "defaultTtl must be in 1..8" }
@@ -52,8 +64,13 @@ data class MeshConfig(
         require(maxPlaintextBytes in 1..MAX_PLAINTEXT_BYTES) {
             "maxPlaintextBytes must be in 1..$MAX_PLAINTEXT_BYTES"
         }
+        require(announceTtl in 1..2) { "announceTtl must be in 1..2" }
+        require(announceIntervalMs > 0) { "announceIntervalMs must be > 0" }
+        require(peerTimeoutMs > 0) { "peerTimeoutMs must be > 0" }
+        require(peerSweepIntervalMs > 0) { "peerSweepIntervalMs must be > 0" }
         require(maxSeenPackets >= 1) { "maxSeenPackets must be >= 1" }
         require(maxPartialMessages >= 1) { "maxPartialMessages must be >= 1" }
+        require(maxNearbyPeers >= 1) { "maxNearbyPeers must be >= 1" }
     }
 
     companion object {

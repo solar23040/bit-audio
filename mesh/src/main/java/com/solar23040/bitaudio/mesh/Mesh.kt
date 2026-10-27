@@ -53,6 +53,11 @@ data class MeshMessage(
     val hopCount: Int,
     /** Plaintext Opus payload. */
     val payload: ByteArray,
+    /**
+     * First 6 hex characters of `SHA-256(identity key)`, when the sender's key
+     * is known (always for nearby traffic). Empty for old/unknown senders.
+     */
+    val senderFingerprint: String = "",
 )
 
 /**

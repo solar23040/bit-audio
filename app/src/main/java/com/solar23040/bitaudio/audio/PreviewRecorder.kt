@@ -23,6 +23,8 @@ data class RecordedClip(
     val file: File,
     val durationMs: Long,
     val peaks: List<Float>,
+    /** Raw 16 kHz mono PCM behind [file], used to build the Opus payload. */
+    val pcm: ShortArray,
 )
 
 /**
@@ -145,6 +147,7 @@ class PreviewRecorder {
                 file = file,
                 durationMs = data.size.toLong() * 1000L / (SAMPLE_RATE.toLong() * BYTES_PER_SAMPLE),
                 peaks = downsamplePeaks(peakSnapshot),
+                pcm = pcm16leToShorts(data),
             ),
         )
     }
@@ -175,6 +178,16 @@ class PreviewRecorder {
         const val BYTES_PER_SAMPLE = 2
         const val MAX_DURATION_MS = 15_000L
     }
+}
+
+private fun pcm16leToShorts(bytes: ByteArray): ShortArray {
+    val samples = ShortArray(bytes.size / 2)
+    for (index in samples.indices) {
+        val low = bytes[index * 2].toInt() and 0xFF
+        val high = bytes[index * 2 + 1].toInt()
+        samples[index] = ((high shl 8) or low).toShort()
+    }
+    return samples
 }
 
 private fun downsamplePeaks(peaks: List<Float>, bars: Int = 48): List<Float> {

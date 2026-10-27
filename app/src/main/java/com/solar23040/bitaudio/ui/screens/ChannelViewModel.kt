@@ -4,6 +4,7 @@ import android.os.SystemClock
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.solar23040.bitaudio.AppGraph
+import com.solar23040.bitaudio.data.NoteState
 import com.solar23040.bitaudio.data.VoiceNote
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
@@ -19,6 +20,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class ChannelViewModel(
     private val graph: AppGraph,
     private val channelId: String,
+    private val nearby: Boolean = false,
 ) : ViewModel() {
     val isRecording = graph.recorder.isRecording
     val amplitude = graph.recorder.amplitude
@@ -41,8 +43,8 @@ class ChannelViewModel(
         if (recordingJob?.isActive == true) return
         stopRequested = false
         recordingJob = viewModelScope.launch {
-            val channel = graph.channels.get(channelId)
-            if (channel == null) {
+            val channel = if (nearby) null else graph.channels.get(channelId)
+            if (!nearby && channel == null) {
                 sendMessage("This channel is no longer available")
                 return@launch
             }
@@ -77,7 +79,12 @@ class ChannelViewModel(
                 sendMessage("Hold the button a little longer")
                 return@launch
             }
-            graph.addRecordedNote(channel, clip)
+            if (nearby) {
+                val note = graph.addNearbyRecordedNote(clip)
+                if (note.state == NoteState.Failed) sendMessage("Could not encode this clip")
+            } else {
+                graph.addRecordedNote(requireNotNull(channel), clip)
+            }
         }
     }
 
@@ -98,10 +105,10 @@ class ChannelViewModel(
         }
 
         playbackJob?.cancel()
-        graph.player.stop()
+        graph.stopPlayback()
         _playingId.value = note.id
         playbackJob = viewModelScope.launch {
-            val result = graph.player.play(file)
+            val result = graph.playClip(file)
             if (_playingId.value == note.id) _playingId.value = null
             if (result.isFailure) sendMessage("Could not play this clip")
         }
@@ -110,7 +117,7 @@ class ChannelViewModel(
     fun stopPlayback() {
         playbackJob?.cancel()
         playbackJob = null
-        graph.player.stop()
+        graph.stopPlayback()
         _playingId.value = null
     }
 
@@ -123,7 +130,7 @@ class ChannelViewModel(
         recordingJob?.cancel()
         graph.cancelActiveRecording()
         playbackJob?.cancel()
-        graph.player.stop()
+        graph.stopPlayback()
         super.onCleared()
     }
 
