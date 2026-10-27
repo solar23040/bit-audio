@@ -113,13 +113,13 @@ fun VoiceNoteCard(
 @Composable
 private fun DeliveryBadge(state: NoteState) {
     val label = when (state) {
-        NoteState.Sending -> "Sending"
+        NoteState.Sent -> "Sent"
         NoteState.Queued -> "Queued"
         NoteState.Delivered -> "Delivered"
         NoteState.Failed -> "Failed"
     }
     val color = when (state) {
-        NoteState.Sending -> MaterialTheme.colorScheme.tertiary
+        NoteState.Sent -> MaterialTheme.colorScheme.tertiary
         NoteState.Queued -> MaterialTheme.colorScheme.secondary
         NoteState.Delivered -> MaterialTheme.colorScheme.primary
         NoteState.Failed -> MaterialTheme.colorScheme.error

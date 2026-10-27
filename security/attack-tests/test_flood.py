@@ -30,121 +30,111 @@ from config import (
     setup_logging,
 )
 from sinks import BleSink, SinkError, make_sink
-from wire import (
-    MAX_FRAME,
-    MAX_PAYLOAD,
-    MAX_TTL,
-    TYPE_VOICE_DATA,
-    build_packet,
-    channel_id_for_key,
-    now_ms,
-)
+from wire import now_ms
 
-MAX_SENT_FRAME = MAX_FRAME
+MAX_SENT_FRAME = 1500
 
 
-def _frame(
-    *,
-    channel_id: bytes,
+def _header(
     rng: random.Random,
-    msg_id: bytes | None = None,
-    sender_id: bytes | None = None,
-    payload: bytes | None = None,
+    *,
     version: int = 1,
-    type_: int = TYPE_VOICE_DATA,
+    type_: int = 1,
+    msg_id: bytes,
+    sender_id: bytes,
     ttl: int = 5,
     chunk_idx: int = 0,
     total_chunks: int = 1,
-    timestamp_ms: int | None = None,
-    counter: int | None = None,
+    ts_ms: int | None = None,
 ) -> bytes:
-    return build_packet(
-        channel_id=channel_id,
-        sender_id=sender_id if sender_id is not None else rng.randbytes(8),
-        payload=payload if payload is not None else rng.randbytes(rng.randrange(0, MAX_PAYLOAD + 1)),
+    from wire import header_bytes
+
+    return header_bytes(
         version=version,
         type_=type_,
-        msg_id=msg_id if msg_id is not None else rng.randbytes(8),
+        msg_id=msg_id,
+        channel_id=rng.randbytes(8),
+        sender_id=sender_id,
         ttl=ttl,
         chunk_idx=chunk_idx,
         total_chunks=total_chunks,
-        timestamp_ms=timestamp_ms if timestamp_ms is not None else now_ms(),
-        counter=counter if counter is not None else rng.randrange(1, 2**32),
+        timestamp_ms=ts_ms if ts_ms is not None else now_ms(),
     )
 
 
-def gen_random(rng: random.Random, channel_id: bytes) -> bytes:
-    total = rng.choice([1, 1, 4, 16, 162, 163, 65535])
-    return _frame(
-        channel_id=channel_id,
-        rng=rng,
+def gen_random(rng: random.Random) -> bytes:
+    sender = rng.randbytes(8)
+    total = rng.choice([1, 1, 4, 16, 255, 65535])
+    header = _header(
+        rng,
         type_=rng.randrange(256),
-        version=rng.choice([1, 1, 0, 255]),
-        ttl=rng.choice([0, 1, 5, 16, 17, 255]),
-        chunk_idx=rng.randrange(0, 65536),
+        msg_id=rng.randbytes(8),
+        sender_id=sender,
+        ttl=rng.choice([0, 1, 5, 5, 255]),
+        chunk_idx=rng.randrange(0, min(total, 65535) + 1),
         total_chunks=total,
-        timestamp_ms=rng.choice([0, now_ms(), 2**64 - 1]),
-        counter=rng.choice([0, 1, rng.randrange(1, 2**32), 0xFFFFFFFF]),
+        ts_ms=rng.choice([0, now_ms(), now_ms() + 10**9]),
     )
+    body = rng.randbytes(rng.randrange(1, 400))
+    return header + rng.randbytes(64) + body
 
 
-def gen_reassembly(rng: random.Random, channel_id: bytes, counter: int) -> bytes:
+def gen_reassembly(rng: random.Random, counter: int) -> bytes:
     # 8 parallel "messages" declaring 65,535 chunks each; indexes keep growing
-    return _frame(
-        channel_id=channel_id,
-        rng=rng,
-        msg_id=bytes([counter % 8]) * 8,
-        sender_id=bytes([1 + counter % 4]) * 8,
-        payload=rng.randbytes(300),
-        ttl=5,
-        chunk_idx=counter % 65535,
-        total_chunks=65535,
+    msg_id = bytes([counter % 8]) * 8
+    sender = bytes([1 + counter % 4]) * 8
+    return (
+        _header(
+            rng,
+            msg_id=msg_id,
+            sender_id=sender,
+            ttl=5,
+            chunk_idx=counter % 65535,
+            total_chunks=65535,
+        )
+        + rng.randbytes(64)
+        + rng.randbytes(200)
     )
 
 
-def gen_header(rng: random.Random, channel_id: bytes, counter: int) -> bytes:
+def gen_header(rng: random.Random, counter: int) -> bytes:
     cases = [
         dict(total_chunks=0, chunk_idx=0),
         dict(total_chunks=65535, chunk_idx=65534),
         dict(total_chunks=1, chunk_idx=65535),
-        dict(total_chunks=163, chunk_idx=0),
+        dict(total_chunks=65535, chunk_idx=65535),
         dict(ttl=0),
-        dict(ttl=MAX_TTL),
-        dict(ttl=MAX_TTL + 1),
         dict(ttl=255),
         dict(version=0),
         dict(version=255),
-        dict(timestamp_ms=0),
-        dict(timestamp_ms=2**64 - 1),
-        dict(counter=0),
+        dict(ts_ms=0),
+        dict(ts_ms=2**64 - 1),
     ]
     case = cases[counter % len(cases)]
-    payload = b"" if rng.random() < 0.5 else rng.randbytes(MAX_PAYLOAD)
-    return _frame(
-        channel_id=channel_id,
-        rng=rng,
-        ttl=case.get("ttl", 5),
-        chunk_idx=case.get("chunk_idx", 0),
-        total_chunks=case.get("total_chunks", 1),
-        version=case.get("version", 1),
-        timestamp_ms=case.get("timestamp_ms", now_ms()),
-        counter=case.get("counter", rng.randrange(1, 2**32)),
-        payload=payload,
+    return (
+        _header(
+            rng,
+            msg_id=rng.randbytes(8),
+            sender_id=rng.randbytes(8),
+            ttl=case.get("ttl", 5),
+            chunk_idx=case.get("chunk_idx", 0),
+            total_chunks=case.get("total_chunks", 1),
+            version=case.get("version", 1),
+            ts_ms=case.get("ts_ms", now_ms()),
+        )
+        + rng.randbytes(64)
+        + rng.randbytes(rng.choice([0, 16, 128, 400]))
     )
 
 
-def make_frame(mode: str, rng: random.Random, channel_id: bytes, counter: int) -> bytes:
+def make_frame(mode: str, rng: random.Random, counter: int) -> bytes:
     if mode == "random":
-        return gen_random(rng, channel_id)
+        return gen_random(rng)
     if mode == "reassembly":
-        return gen_reassembly(rng, channel_id, counter)
+        return gen_reassembly(rng, counter)
     if mode == "header":
-        return gen_header(rng, channel_id, counter)
-    return [
-        lambda: gen_random(rng, channel_id),
-        lambda: gen_reassembly(rng, channel_id, counter),
-        lambda: gen_header(rng, channel_id, counter),
-    ][counter % 3]()
+        return gen_header(rng, counter)
+    return [gen_random, gen_reassembly, gen_header][counter % 3](rng, counter)
 
 
 async def probe(sink, uuid: str | None) -> tuple[bool, float | None]:
@@ -162,7 +152,6 @@ async def probe(sink, uuid: str | None) -> tuple[bool, float | None]:
 async def run(args: argparse.Namespace) -> int:
     cfg = resolve_config(args)
     rate = effective_rate(args, cfg)
-    channel_id = channel_id_for_key(cfg.channel_key)
 
     max_frames = cfg.limits.max_frames
     if args.max_frames is not None:
@@ -178,8 +167,7 @@ async def run(args: argparse.Namespace) -> int:
     failures = 0
     link_lost_at: int | None = None
     started = time.monotonic()
-    probe_before: tuple[bool, float | None] = (True, None)
-    probe_after: tuple[bool, float | None] = (True, None)
+    probe_before = (True, None)
 
     await sink.open()
     try:
@@ -190,7 +178,8 @@ async def run(args: argparse.Namespace) -> int:
         )
         for counter in range(planned):
             await limiter.wait()
-            frame = make_frame(args.mode, rng, channel_id, counter)[:MAX_SENT_FRAME]
+            frame = make_frame(args.mode, rng, counter)
+            frame = frame[:MAX_SENT_FRAME]  # never send absurd payloads
             try:
                 await sink.send(frame)
             except SinkError as exc:

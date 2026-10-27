@@ -28,7 +28,7 @@ class RetentionTest {
     fun onlyUndeliveredNotesBeforeCutoffExpire() {
         val notes = listOf(
             note("old-queued", cutoff - 1, NoteState.Queued),
-            note("old-sending", cutoff - 1, NoteState.Sending),
+            note("old-sent", cutoff - 1, NoteState.Sent),
             note("old-failed", cutoff - 1, NoteState.Failed),
             note("old-delivered", cutoff - 1, NoteState.Delivered),
             note("new-queued", cutoff, NoteState.Queued),
@@ -36,6 +36,6 @@ class RetentionTest {
 
         val expired = notes.expiredNotes(cutoff).map { it.id }
 
-        assertEquals(listOf("old-queued", "old-sending", "old-failed"), expired)
+        assertEquals(listOf("old-queued", "old-sent", "old-failed"), expired)
     }
 }

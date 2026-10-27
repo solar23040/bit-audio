@@ -16,7 +16,7 @@ from pathlib import Path
 from nacl.signing import SigningKey
 
 from config import DEFAULT_CONFIG_PATH
-from wire import channel_id_for_key, now_ms, sender_id_for_pubkey
+from wire import now_ms, sender_id_for_pubkey
 
 
 def main() -> int:
@@ -42,7 +42,7 @@ def main() -> int:
         "victim": {"sender_id_hex": None, "pubkey_hex": None},
         "ble": None,
         "sim_out": str(args.sim_out) if args.sim_out else None,
-        "limits": {"max_pps": 50, "max_frames": 100000},
+        "limits": {"max_pps": 50, "max_frames": 2000},
     }
     if args.address or args.rx_uuid:
         if not (args.address and args.rx_uuid):
@@ -60,13 +60,10 @@ def main() -> int:
     os.chmod(args.out, 0o600)
 
     print(f"wrote {args.out} (mode 0600)")
-    print(f"channel_id: {channel_id_for_key(channel_key).hex()}")
     print(f"test identity pubkey: {pubkey.hex()}")
-    print(f"test identity sender_id (now): {sender_id_for_pubkey(channel_key, pubkey, now_ms()).hex()}")
-    print("next: paste the real channel key from the app debug export (or keep the")
-    print("      generated one for a throwaway test channel) and, for spoofing,")
-    print("      fill victim.pubkey_hex from the target roster. sender IDs rotate")
-    print("      every 15 minutes, so do not hardcode victim.sender_id_hex.")
+    print(f"test identity sender_id: {sender_id_for_pubkey(channel_key, pubkey, now_ms()).hex()}")
+    print("next: paste the channel key from the app debug export and, for spoofing,")
+    print("      fill victim.sender_id_hex / victim.pubkey_hex from the target roster.")
     return 0
 
 

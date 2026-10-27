@@ -1,17 +1,17 @@
 package com.solar23040.bitaudio.data
 
 import android.content.Context
+import com.solar23040.bitaudio.pipeline.ClipSource
 import java.io.File
 import java.util.UUID
 
-/** Owns the app-private directory holding encoded voice clips. */
-class ClipStore(context: Context) {
+/** Owns the app-private directory holding encoded voice clips (Opus payloads). */
+class ClipStore(context: Context) : ClipSource {
     private val directory = File(context.filesDir, DIRECTORY_NAME).apply { mkdirs() }
 
-    fun newFile(extension: String = "wav"): File =
-        File(directory, "${UUID.randomUUID()}.${extension.ifBlank { "wav" }}")
+    override fun newFile(): File = File(directory, "${UUID.randomUUID()}.$FILE_EXTENSION")
 
-    fun resolve(fileName: String): File? {
+    override fun resolve(fileName: String): File? {
         if (fileName.isBlank() || fileName.contains('/') || fileName.contains('\\')) return null
         return File(directory, fileName).takeIf { it.isFile }
     }
@@ -32,5 +32,8 @@ class ClipStore(context: Context) {
 
     private companion object {
         const val DIRECTORY_NAME = "clips"
+
+        /** Files hold the `EncodedAudioClip.toPayload()` blob, not raw audio. */
+        const val FILE_EXTENSION = "opus"
     }
 }

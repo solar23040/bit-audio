@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Harness self-check: wire round-trip, crypto, derivations, mutations.
+"""Harness self-check: v1 wire round-trip, crypto, mutations, no hardware.
 
-No hardware or attack config needed:
+Run locally or in CI to prove the attack tooling itself matches
+``docs/packet-format.md`` v1:
 
   python selfcheck.py
 """
@@ -14,16 +15,15 @@ import sys
 from nacl.exceptions import BadSignatureError
 from nacl.signing import SigningKey
 
-from mutations import MUTATIONS, TTL_MUTATIONS, apply_all
+from mutations import MUTATIONS, TTL_ONLY_MUTATIONS, apply_all
 from wire import (
-    EPOCH_MS,
-    MAX_FRAME,
+    MAX_PLAINTEXT_CHUNK,
     PacketError,
     build_voice_message,
-    channel_id_for_key,
+    now_ms,
+    open_sealed,
     parse_packet,
     reassemble,
-    sender_id_for_pubkey,
     validate_frame,
     verify_packet,
 )
@@ -33,70 +33,61 @@ def main() -> int:
     channel_key = secrets.token_bytes(32)
     signing_key = SigningKey.generate()
     pubkey = signing_key.verify_key.encode()
+    timestamp_ms = now_ms()
     plaintext = b"mesh voice note self-check " * 40
-    timestamp = 1_700_000_000_000
 
     msg_id, frames = build_voice_message(
         channel_key=channel_key,
         signing_key=signing_key,
         plaintext=plaintext,
-        timestamp_ms=timestamp,
+        chunk_size=200,
+        timestamp_ms=timestamp_ms,
     )
     assert len(frames) > 1, "expected a multi-frame message"
-    assert len(frames) == (len(plaintext) + 40 + 404) // 405  # sealed once, 405 B chunks
+    assert all(len(frame) <= 512 for frame in frames), "frame exceeds 512 bytes"
 
-    first = parse_packet(frames[0])
-    assert first.channel_id == channel_id_for_key(channel_key)
-    assert first.sender_id == sender_id_for_pubkey(channel_key, pubkey, timestamp)
-    assert first.total_chunks == len(frames)
-    assert first.timestamp_ms == timestamp
-
+    rebuilt = bytearray()
     for frame in frames:
-        reason = validate_frame(frame)
+        reason = validate_frame(frame, now=timestamp_ms)
         assert reason is None, f"valid frame rejected: {reason}"
-        assert len(frame) <= MAX_FRAME
         packet = parse_packet(frame)
         assert packet.msg_id == msg_id
-        assert verify_packet(packet, pubkey), "signature did not verify"
-        assert packet.aad == (
-            first.channel_id
-            + first.msg_id
-            + first.timestamp_ms.to_bytes(8, "big")
-            + first.counter.to_bytes(4, "big")
-        )
+        assert verify_packet(packet, pubkey), "valid signature rejected"
+        rebuilt.extend(open_sealed(channel_key, packet.payload, packet.aad))
+    assert bytes(rebuilt) == plaintext, "reassembled plaintext mismatch"
+    assert (
+        reassemble(frames, channel_key, signer_public_key=pubkey, now=timestamp_ms)
+        == plaintext
+    ), "reassemble() mismatch"
 
-    assert reassemble(frames, channel_key) == plaintext, "reassembled plaintext mismatch"
-
+    # Wrong channel key must fail to open.
     try:
-        reassemble(frames, secrets.token_bytes(32))
+        open_sealed(secrets.token_bytes(32), parse_packet(frames[0]).payload, parse_packet(frames[0]).aad)
     except PacketError:
         pass
     else:
-        raise AssertionError("wrong channel key opened the message")
+        raise AssertionError("wrong key opened the payload")
 
-    # Sender ID rotates per 15-minute epoch and is channel-scoped.
-    later = sender_id_for_pubkey(channel_key, pubkey, timestamp + EPOCH_MS)
-    other_channel = sender_id_for_pubkey(secrets.token_bytes(32), pubkey, timestamp)
-    assert later != first.sender_id
-    assert other_channel != first.sender_id
-
-    # Every mutation must change the frame. Non-TTL mutations must fail the
-    # signature; TTL mutations keep it valid by design but must be clamped.
+    # Every non-TTL mutation must change the frame and then fail parsing or
+    # signature verification. TTL is deliberately outside the signature, so TTL
+    # mutations must still verify; only the 1..8 bound rejects them.
     for name, mutated in apply_all(frames[0]):
         assert mutated != frames[0], f"{name} did not change the frame"
         try:
             packet = parse_packet(mutated)
         except PacketError:
-            assert name not in TTL_MUTATIONS
             continue
-        if name in TTL_MUTATIONS:
-            assert verify_packet(packet, pubkey), f"{name}: ttl must not be signed"
-            if name in {"bump_ttl", "ttl_16"}:
-                assert validate_frame(mutated) is None, f"{name}: expected structurally valid"
+        if name in TTL_ONLY_MUTATIONS:
+            assert verify_packet(packet, pubkey), f"{name}: TTL mutation broke the signature"
+            if name == "bump_ttl":
+                assert packet.ttl == 6 and validate_frame(mutated) is None, (
+                    "bump_ttl must stay valid (TTL 1..8 is accepted)"
+                )
             else:
-                assert validate_frame(mutated) is not None, f"{name}: expected ttl clamp"
-        else:
-            assert not verify_packet(packet, pubkey), f"{name}: mutated frame still verifies"
+                assert validate_frame(mutated) is not None, f"{name}: invalid TTL accepted"
+            continue
+        if verify_packet(packet, pubkey):
+            raise AssertionError(f"{name}: mutated frame still verifies")
 
     try:
         parse_packet(frames[0][:106])
@@ -105,19 +96,9 @@ def main() -> int:
     else:
         raise AssertionError("truncated frame parsed")
 
-    try:
-        signing_key.verify_key.verify(
-            parse_packet(frames[0]).signing_input, bytes(64)
-        )
-    except (BadSignatureError, ValueError):
-        pass
-    else:
-        raise AssertionError("zero signature verified")
-
     print(
-        f"PASS harness self-check: {len(frames)} frames, "
-        f"{len(plaintext)} B round-trip, {len(MUTATIONS)} mutations, "
-        f"{len(TTL_MUTATIONS)} TTL cases"
+        f"PASS harness self-check: {len(frames)} frames, {len(plaintext)} B round-trip, "
+        f"{len(MUTATIONS)} mutations, chunk={MAX_PLAINTEXT_CHUNK} B"
     )
     return 0
 

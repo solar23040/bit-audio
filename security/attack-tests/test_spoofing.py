@@ -4,9 +4,9 @@
 Expected observations:
   baseline        -> delivered and playable
   forged-id       -> dropped silently (signature does not match victim key)
-  modified-sender -> dropped silently (sender_id is signed and resolved via roster)
+  modified-sender -> dropped silently (sender_id is part of the signed header)
   poison          -> forged frame first, then the valid baseline with the SAME
-                     msg_id; exactly one valid clip may be delivered. Any loss or
+                     msg_id; only the valid clip may be delivered. Any loss or
                      duplicate points at SEC-001.
 """
 
@@ -17,6 +17,9 @@ import asyncio
 import secrets
 import sys
 from dataclasses import replace
+
+from nacl.exceptions import BadSignatureError
+from nacl.signing import VerifyKey
 
 from config import (
     RateLimiter,
@@ -36,22 +39,28 @@ from wire import (
     now_ms,
     parse_packet,
     sender_id_for_pubkey,
-    verify_packet,
 )
+
+
+def _verify_under(frame: bytes, pubkey: bytes) -> bool:
+    packet = parse_packet(frame)
+    try:
+        VerifyKey(pubkey).verify(packet.signing_input, packet.signature)
+        return True
+    except (BadSignatureError, ValueError):
+        return False
 
 
 async def run(args: argparse.Namespace) -> int:
     cfg = resolve_config(args)
     signing_key, pubkey = identity_from_config(cfg)
-    own_sender_id = from_hex(args.sender_id_hex) if args.sender_id_hex else None
-    if own_sender_id is not None and len(own_sender_id) != 8:
+    own_sender_id = (
+        from_hex(args.sender_id_hex)
+        if args.sender_id_hex
+        else sender_id_for_pubkey(cfg.channel_key, pubkey, now_ms())
+    )
+    if len(own_sender_id) != 8:
         raise SystemExit("--sender-id-hex must be 8 bytes")
-
-    if cfg.victim_pubkey is None and cfg.victim_sender_id is None:
-        raise SystemExit(
-            "spoofing tests need victim.pubkey_hex (preferred) or "
-            "victim.sender_id_hex in the config"
-        )
 
     cases = [args.case] if args.case != "all" else [
         "baseline",
@@ -59,12 +68,11 @@ async def run(args: argparse.Namespace) -> int:
         "modified-sender",
         "poison",
     ]
-
-    def victim_id(timestamp_ms: int) -> bytes:
-        if cfg.victim_sender_id is not None:
-            return cfg.victim_sender_id
-        assert cfg.victim_pubkey is not None
-        return sender_id_for_pubkey(cfg.channel_key, cfg.victim_pubkey, timestamp_ms)
+    if any(c != "baseline" for c in cases) and cfg.victim_sender_id is None:
+        raise SystemExit(
+            "spoofing tests need victim.sender_id_hex in the config "
+            "(copy it from the target roster/debug export)"
+        )
 
     token = secrets.token_hex(4)
     sink = make_sink(args, cfg)
@@ -76,55 +84,49 @@ async def run(args: argparse.Namespace) -> int:
     try:
         for case in cases:
             text = f"Agent H spoof {case} {token}".encode()
-            timestamp = now_ms()
             if case == "baseline":
                 msg_id, frames = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
-                    plaintext=text,
-                    timestamp_ms=timestamp,
                     sender_id=own_sender_id,
+                    plaintext=text,
                 )
                 rows.append((case, hexs(msg_id), "delivered"))
             elif case == "forged-id":
-                forged_id = victim_id(timestamp)
+                assert cfg.victim_sender_id is not None
                 msg_id, frames = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
+                    sender_id=cfg.victim_sender_id,
                     plaintext=text,
-                    timestamp_ms=timestamp,
-                    sender_id=forged_id,
                 )
                 rows.append((case, hexs(msg_id), "dropped"))
             elif case == "modified-sender":
                 _, baseline = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
-                    plaintext=text,
-                    timestamp_ms=timestamp,
                     sender_id=own_sender_id,
+                    plaintext=text,
                 )
+                assert cfg.victim_sender_id is not None
                 packet = parse_packet(baseline[0])
-                frames = [
-                    replace(packet, sender_id=victim_id(packet.timestamp_ms)).to_bytes()
-                ]
+                frames = [replace(packet, sender_id=cfg.victim_sender_id).to_bytes()]
                 msg_id = packet.msg_id
                 rows.append((case, hexs(msg_id), "dropped"))
             elif case == "poison":
                 base_id, baseline = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
-                    plaintext=text,
-                    timestamp_ms=timestamp,
                     sender_id=own_sender_id,
+                    plaintext=text,
                 )
+                assert cfg.victim_sender_id is not None
                 _, forged = build_voice_message(
                     channel_key=cfg.channel_key,
                     signing_key=signing_key,
+                    sender_id=cfg.victim_sender_id,
                     plaintext=b"garbage " + text,
-                    timestamp_ms=timestamp,
                     msg_id=base_id,
-                    sender_id=victim_id(timestamp),
                 )
                 frames = forged[:1] + baseline
                 msg_id = base_id
@@ -147,15 +149,17 @@ async def run(args: argparse.Namespace) -> int:
                     failures += 1
                     break
 
-            # Local prechecks: signed header fields must reject the fakes.
-            if case in {"forged-id", "modified-sender"} and cfg.victim_pubkey is not None:
-                if verify_packet(parse_packet(frames[0]), cfg.victim_pubkey):
+            # Local precheck: the point of each negative case is a failed signature.
+            if case in {"forged-id", "modified-sender"}:
+                if cfg.victim_pubkey is None:
+                    print(f"  precheck {case}: skipped (set victim.pubkey_hex to enable)")
+                elif _verify_under(frames[0], cfg.victim_pubkey):
                     print(f"WARN {case}: forged frame verifies under the victim key; test is invalid")
                     failures += 1
                 else:
                     print(f"  precheck {case}: signature rejected under victim key (expected)")
             elif case == "baseline":
-                if not verify_packet(parse_packet(frames[0]), pubkey):
+                if not _verify_under(frames[0], pubkey):
                     print("WARN baseline: own signature does not verify; harness bug")
                     failures += 1
     finally:
@@ -188,7 +192,7 @@ def main() -> int:
     )
     parser.add_argument(
         "--sender-id-hex",
-        help="override the baseline sender ID (default: derived from the test identity)",
+        help="override the 8-byte sender ID for the baseline (if not derived from the key)",
     )
     args = parser.parse_args()
     setup_logging(args.verbose)
