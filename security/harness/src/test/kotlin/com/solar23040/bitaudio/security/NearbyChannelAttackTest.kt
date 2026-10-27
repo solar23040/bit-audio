@@ -349,12 +349,17 @@ open class NearbyChannelAttackTest {
         runCurrent()
         assertEquals("duplicate claims inflated the count", 2, victim.memberCount())
 
-        // An invalid signature cannot inject a fake peer at all.
+        // An invalid signature cannot inject a fake peer at all. Let the
+        // neighbour bucket refill first, otherwise the frame would be dropped
+        // as rate-limited and never reach signature verification.
+        clock.addAndGet(5_000)
         val forged = announce(mallorySeed, clock.get(), messageId(next++), "Alice", 0xFFFF)
         forged[forged.lastIndex] = (forged.last().toInt() xor 1).toByte()
+        val invalidBefore = victim.droppedInvalid
         mallory.send(Peer("victim"), forged)
         runCurrent()
         assertEquals("forged announce added a peer", 2, victim.memberCount())
+        assertTrue("forged announce was not rejected by signature check", victim.droppedInvalid > invalidBefore)
 
         // A relay that drops Bob's announce cannot make Bob appear; equally, the
         // victim must not claim a crowd it cannot authenticate.
