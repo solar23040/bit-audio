@@ -652,8 +652,10 @@ flood stays bounded` sends 4,000 signed announces and 500 signed public clips at
 rate/capacity drops occurred, every delivered clip belongs to an admitted
 identity, and the honest member's clip still arrives before and after the flood.
 
-**CI result (run `PENDING`):** see the `security-harness` job output line
-`[SEC-018] announce/clip flood: ...`.
+**CI result (run `40530426757`, commit `13a8a7f`, job `security-harness`):** passed
+with the whole `build` workflow (11 harness tests, 0 failures; `security-fuzz`
+and the app build also green). `[SEC-018] announce/clip flood: members=64
+delivered=58 rateDrops=3402 capacityDrops=979 aliceClips=2`.
 
 ---
 
@@ -682,8 +684,9 @@ entries with distinct labels, renames one key and confirms the other is
 unchanged, rejects a corrupted signature, and checks that a voice clip is
 attributed to the signing key rather than the nickname.
 
-**CI result (run `PENDING`):** see the `security-harness` job output line
-`[SEC-019] nickname binding: ...`.
+**CI result (run `40530426757`, commit `13a8a7f`, job `security-harness`):** passed.
+`[SEC-019] nickname binding: alice=Alice (bd0fbc) mallory=Alice (c9b7e5)
+members=2`; the corrupted-signature case increments `droppedInvalid`.
 
 ---
 
@@ -713,8 +716,11 @@ not occur in announce frames, that sender ID and epoch key change across
 epochs, and that generated announce delays leave the jitter window, are not
 constant, and differ between devices.
 
-**CI result (run `PENDING`):** see the `security-harness` job output line
-`[SEC-020] tracking: ...`.
+**CI result (run `40530426757`, commit `13a8a7f`, job `security-harness`):** passed.
+`[SEC-020] tracking: sender0=fadeb611aaa66ded sender1=1566c3a47ed8ccea
+uniqueDelays=64` — sender ID and epoch identity rotate, 64 synthetic announces
+produced 64 distinct delays, and the install public key was absent from both
+frames.
 
 ---
 
@@ -746,8 +752,11 @@ authenticated identities; a relay that does not forward Bob cannot make Bob
 appear; the direct path still delivers Alice's clip; silent peers expire to
 zero instead of the claimed value.
 
-**CI result (run `PENDING`):** see the `security-harness` job output line
-`[SEC-021] eclipse/count: ...`.
+**CI result (run `40530426757`, commit `13a8a7f`, job `security-harness`):** passed.
+`[SEC-021] eclipse/count: verified=0 droppedInvalid=1 droppedDuplicate=0` — the
+count stayed at the two authenticated identities under a 65,535 claim, the forged
+announce was rejected by the signature check (the test refills the neighbour
+bucket first so it cannot pass as rate-limited), and the count expired to zero.
 
 ---
 
