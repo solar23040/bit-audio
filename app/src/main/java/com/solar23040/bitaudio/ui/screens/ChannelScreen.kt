@@ -340,6 +340,7 @@ private fun EmptyNotes(modifier: Modifier = Modifier) {
     }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MissingChannel(onBack: () -> Unit) {
     Scaffold(
