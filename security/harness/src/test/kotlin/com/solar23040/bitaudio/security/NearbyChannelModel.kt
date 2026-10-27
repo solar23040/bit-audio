@@ -457,7 +457,7 @@ internal class NearbyNode(
 /** Jittered announce schedule; a fixed cadence is itself a tracking signal. */
 internal object NearbySchedule {
     const val BASE_INTERVAL_MS = 30_000L
-    const val JITTER_MS = 0L..5_000L
+    val JITTER_MS = 0L..5_000L
 
     fun nextDelayMs(random: Random): Long =
         BASE_INTERVAL_MS + random.nextLong(JITTER_MS.first, JITTER_MS.last + 1)
