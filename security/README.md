@@ -7,21 +7,25 @@ and [`docs/interfaces.md`](../docs/interfaces.md).
 | Document | Contents |
 |---|---|
 | [`threat-model.md`](threat-model.md) | Assets, adversaries, STRIDE table, trust boundaries, privacy/resource limits, open questions |
+| [`nearby-threat-model.md`](nearby-threat-model.md) | Pre-implementation review of the open Nearby channel (sybil flood, nicknames, tracking, peer-count/eclipse) |
 | [`findings.md`](findings.md) | Tracked findings with severity, status, owner, repro and verification |
 | [`attack-tests/`](attack-tests/) | Runnable BLE/simulator attack harness + self-check |
 
 ## Current status
 
-- Threat model: v0.2, updated for the landed v1 packet format.
-- Findings: 17 entries. Spoofing, replay, flood/reassembly bounds, TTL handling
+- Threat model: v0.4, plus a separate pre-implementation review of the open
+  **Nearby** channel.
+- Findings: 21 entries. Spoofing, replay, flood/reassembly bounds, TTL handling
   and relay tampering are verified in CI against the real `:mesh` + `:crypto`
   on `FakeNetwork`; BLE/Keystore/UI findings still need device or app tests.
+  Nearby findings SEC-018..SEC-021 are design acceptance criteria because the
+  feature is not implemented on `main`.
 - Harness: `security-harness` and `security-fuzz` jobs run on every push;
   self-check and dry-run paths also work locally.
 - **Resolved:** SEC-016 — docs v1, `:crypto` and the committed contract vector
-  now agree (run `40301889226`). Remaining open code findings: SEC-001
-  (`MeshNode` dedup), SEC-004 (`MeshNode` ingress rate limit), SEC-017
-  (`MeshNode` accepts `counter = 0`). See findings.md.
+  agree. Remaining open code findings: SEC-001 (`MeshNode` dedup), SEC-004
+  (`MeshNode` ingress rate limit), SEC-017 (`MeshNode` accepts `counter = 0`).
+  See findings.md for CI evidence.
 
 ## Quick start
 

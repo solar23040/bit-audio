@@ -172,6 +172,26 @@ exits 3; attach that file to the finding (it contains frame bytes, not keys).
 A 1-hour run without crash/disconnect is the Phase 5 acceptance bar. Keep a
 valid clip exchange going during/after to check the app is still usable.
 
+### Nearby channel (pre-implementation)
+
+The open **Nearby** channel is not implemented on `main`; `MEMBER_ANNOUNCE`
+(type `0x03`) is still reserved. Its four threat cases are executable design
+tests in the JVM harness, using the real `:crypto` and `FakeNetwork`:
+
+```bash
+# Same job as the mesh attacks; the init script adds the harness module.
+./gradlew -I security/ci/harness.init.gradle \
+  :security-harness:testDebugUnitTest \
+  --tests "com.solar23040.bitaudio.security.MeshAttackTest"
+```
+
+`NearbyChannelAttackTest` (inherited by `MeshAttackTest` so the existing CI
+filter runs it) covers sybil announce/clip flooding, nickname spoofing,
+identity/timing tracking and peer-count inflation/eclipse. It attacks the
+reference policy in `NearbyChannelModel.kt`, not production code. When Nearby
+lands, retarget the tests and keep the assertions; see
+[`../nearby-threat-model.md`](../nearby-threat-model.md) and SEC-018..SEC-021.
+
 ## What is not automated
 
 - **Delivery observation** is manual (UI/sim logs). The harness proves it sent

@@ -1,9 +1,9 @@
 # Threat Model — Mesh Voice Notes
 
-Status: v0.3 (mesh + crypto implemented; attack suite runs in CI on `FakeNetwork`)
+Status: v0.4 (Phase 2 implementation review + pre-implementation Nearby review)
 Owner: Agent H (Security)
-Last updated: 2026-10-26
-Related: [`findings.md`](findings.md), [`attack-tests/README.md`](attack-tests/README.md), [`../pllan.md`](../pllan.md), [`../docs/packet-format.md`](../docs/packet-format.md), [`../docs/interfaces.md`](../docs/interfaces.md)
+Last updated: 2026-10-27
+Related: [`findings.md`](findings.md), [`nearby-threat-model.md`](nearby-threat-model.md), [`attack-tests/README.md`](attack-tests/README.md), [`../pllan.md`](../pllan.md), [`../docs/packet-format.md`](../docs/packet-format.md), [`../docs/interfaces.md`](../docs/interfaces.md)
 
 > **Contract status:** `docs/packet-format.md` v1, `:crypto` and the committed
 > vector now agree; SEC-016 is fixed and verified in CI. The attack harness and
@@ -219,11 +219,16 @@ allocation and before crypto.
 | Metadata leaks: stable IDs, adv fingerprint, MAC rotation | `test_metadata.py` | SEC-005, SEC-011 |
 | Fuzzing: chunk overflow, huge `total_chunks`, truncated headers | `fuzz_packets.py` | SEC-003, SEC-012 |
 | Malicious relay: drop/modify, detection via signature | `test_malicious_relay.py` | SEC-002, SEC-009 |
+| Nearby: announce/clip sybil flood | `NearbyChannelAttackTest` (JVM `FakeNetwork`) | SEC-018 |
+| Nearby: nickname impersonation | `NearbyChannelAttackTest` (JVM `FakeNetwork`) | SEC-019 |
+| Nearby: identity/timing tracking | `NearbyChannelAttackTest` (JVM `FakeNetwork`) | SEC-020 |
+| Nearby: peer-count inflation/eclipse | `NearbyChannelAttackTest` (JVM `FakeNetwork`) | SEC-021 |
 | Threat model, STRIDE, findings | this document, `findings.md` | — |
 
-Execution status is tracked at the top of [`findings.md`](findings.md). Live
-runs are blocked until the contract is reconciled (SEC-016), a CI APK exists,
-and Agent C's GATT characteristic/notify contract is known.
+Execution status is tracked at the top of [`findings.md`](findings.md). The JVM
+suite runs the real `:mesh`/`:crypto` code in CI; device/radio tests still need
+a CI APK and Agent C's GATT characteristic/notify contract. The Nearby cases
+are pre-implementation acceptance criteria (see §12).
 
 ---
 
@@ -281,3 +286,29 @@ and Agent C's GATT characteristic/notify contract is known.
    for the full retention window and accept old-but-inside-retention packets.
 7. **Keystore fallback.** Confirm the software-key wrapping approach and
    backup exclusion once `AndroidKeystoreSecretStore` is reviewed on device.
+
+---
+
+## 12. Nearby channel (pre-implementation)
+
+The proposed open local **Nearby** channel changes the trust model: there is no
+QR key and no fixed roster, so anyone in range can mint valid identities and
+valid signed frames. It needs its own review; see
+[`nearby-threat-model.md`](nearby-threat-model.md) for the full analysis and
+the recommended limits.
+
+Summary of the four threat cases that must be closed before the feature ships:
+
+| ID | Threat | Severity | Required control |
+|---|---|---|---|
+| SEC-018 | Sybil flood of ANNOUNCE and public clips | High | Per-neighbour/identity rate limits, hard registry cap, verify before admission, bounded voice budget |
+| SEC-019 | Nickname impersonation with a different key | Medium (High if UI shows nickname only) | Registry keyed by authenticated identity; duplicate nicknames get a fingerprint; network input never overwrites an existing alias |
+| SEC-020 | Tracking via stable install key or fixed announce cadence | Medium | Per-channel/per-epoch announce keys, v1 rotating sender ID, jittered/coalesced announces, no stable key on the wire |
+| SEC-021 | Fake peer-count inflation / eclipse by a relay | Medium (High for eclipse) | Count only locally authenticated, recently heard identities; ignore claimed counts/lists; expire; show last-seen rather than claiming completeness |
+
+The executable cases are in
+`security/harness/src/test/kotlin/com/solar23040/bitaudio/security/NearbyChannelAttackTest.kt`
+and run in the `security-harness` CI job. `MEMBER_ANNOUNCE` is still reserved on
+`main`, so these tests attack a reference policy, not shipped code. When the
+implementation lands, retarget the tests to the production class and keep the
+assertions; do not ship two separate definitions of admission.

@@ -1,8 +1,8 @@
 # Security Findings — Mesh Voice Notes
 
 Owner: Agent H (Security)
-Last updated: 2026-10-26
-Target: `main` + `agent-h/phase-2` at the CI run referenced below.
+Last updated: 2026-10-27
+Target: `main` + `agent-h/nearby-threats` at the CI run referenced below.
 `docs/packet-format.md` and `docs/interfaces.md` are authoritative.
 
 The JVM attack suite now runs the **real** `:mesh` and `:crypto` code on
@@ -15,7 +15,9 @@ Overall status: **parser, spoofing, replay, TTL, reassembly and relay-tampering
 properties verified in CI**; one High finding remains open in the app-wired
 `MeshNode` (SEC-001), plus SEC-017 (counter=0) and the node-side rate limit in
 SEC-004. SEC-016 is resolved: docs v1 and `:crypto` now agree and a committed
-byte-exact vector verifies in CI.
+byte-exact vector verifies in CI. SEC-018..SEC-021 cover the **Nearby** channel,
+which is not implemented on `main`; they are pre-implementation acceptance tests
+against a reference policy (see [`nearby-threat-model.md`](nearby-threat-model.md)).
 
 ## CI verification
 
@@ -64,6 +66,10 @@ properties are hard assertions.
 | SEC-015 | Info | Malicious member content | **Won't Fix — inherent to key-based groups; documented** | — |
 | SEC-016 | High | Crypto code ≠ packet format v1 | **Fixed — docs v1, code and vector agree** | A + E |
 | SEC-017 | Medium | `MeshNode` accepts `counter = 0` | **Open — reproduced in CI** | D |
+| SEC-018 | High | Nearby ANNOUNCE/public-clip sybil flood | **Open — design acceptance test (feature not implemented)** | D + F |
+| SEC-019 | Medium (High if nickname-only UI) | Nearby nickname impersonation | **Open — design acceptance test (feature not implemented)** | F + D |
+| SEC-020 | Medium | Nearby tracking via identity/timing | **Open — design acceptance test (feature not implemented)** | E + F |
+| SEC-021 | Medium (High for eclipse) | Nearby peer-count inflation/eclipse | **Open — design acceptance test (feature not implemented)** | D + F |
 
 
 Severity rubric:
@@ -613,6 +619,135 @@ reported` prints `[SEC-017][NODE] OPEN: counter=0 accepted (docs require
 green for both implementations once the node check lands.
 
 **CI result (run `40301889226`):** reproduced. `MeshAttackTest > known open findings are reproduced and reported` prints `[SEC-017][NODE] OPEN: counter=0 accepted (docs require 1..2^32-1)` for `MeshNode`, and asserts `MeshEngine` rejects it (`[SEC-017][ENGINE] fixed: counter=0 rejected`).
+
+---
+
+## SEC-018 — Nearby ANNOUNCE/public-clip sybil flood can exhaust the channel
+
+**Severity:** High · **Status:** Open — design acceptance test; feature not implemented · **Owner:** D + F
+**Found:** 2026-10-27 (Nearby threat review)
+
+The Nearby channel is assumed to be open: no QR key, no fixed roster, so an
+attacker can mint a fresh Ed25519 identity per frame and still produce valid
+signatures. Flooding `MEMBER_ANNOUNCE` (`0x03`) grows the peer registry and the
+UI; flooding public voice clips fills reassembly, storage and airtime. A
+per-neighbour limiter alone is not enough if the announcement handler admits
+every verified key or if voice limits are keyed only by the rotating ID.
+
+**Impact:** Trivial DoS and resource exhaustion on a channel that is on by
+default; real peers are crowded out and the app can burn battery/airtime without
+any channel key or user action.
+
+**Recommendation:** enforce the §3 limits in
+[`nearby-threat-model.md`](nearby-threat-model.md): per-neighbour/global ingress
+buckets before crypto, per-identity announce bucket after verification, a hard
+registry cap with an explicit drop policy, bounded frames/reassembly, and a voice
+budget per identity. Verify before dedup/admission so unauthenticated frames
+cannot evict verified entries. The valid-clip path must keep working during a
+flood.
+
+**Verification:** `NearbyChannelAttackTest > sybil announce and public clip
+flood stays bounded` sends 4,000 signed announces and 500 signed public clips at
+200/s over `FakeNetwork`, then asserts the member count is at or below the cap,
+rate/capacity drops occurred, every delivered clip belongs to an admitted
+identity, and the honest member's clip still arrives before and after the flood.
+
+**CI result (run `PENDING`):** see the `security-harness` job output line
+`[SEC-018] announce/clip flood: ...`.
+
+---
+
+## SEC-019 — Nearby nickname can be spoofed by a different key
+
+**Severity:** Medium (High if the UI shows a nickname without a fingerprint) ·
+**Status:** Open — design acceptance test; feature not implemented · **Owner:** F + D
+**Found:** 2026-10-27 (Nearby threat review)
+
+A nickname is user-chosen and not unique. If the Nearby registry is keyed by
+nickname, if a later announce replaces the existing alias, or if the UI renders
+only the nickname, a fresh key can announce "Alice" and be mistaken for the
+existing Alice. The signature is valid, so cryptography alone does not stop it.
+
+**Impact:** Social engineering and impersonation inside the local crowd;
+misattributed clips and a poisoned peer list.
+
+**Recommendation:** key the registry by the authenticated epoch identity; treat
+a duplicate nickname as a second entry, never an overwrite; append a short key
+fingerprint to duplicate labels and show the full fingerprint on tap. Only the
+key owner may rename their own entry. Never treat a nickname as a trust signal.
+
+**Verification:** `NearbyChannelAttackTest > nickname spoof with a different key
+cannot overwrite an identity` announces "Alice" from two keys, asserts two
+entries with distinct labels, renames one key and confirms the other is
+unchanged, rejects a corrupted signature, and checks that a voice clip is
+attributed to the signing key rather than the nickname.
+
+**CI result (run `PENDING`):** see the `security-harness` job output line
+`[SEC-019] nickname binding: ...`.
+
+---
+
+## SEC-020 — Nearby announce identity and timing enable tracking
+
+**Severity:** Medium · **Status:** Open — design acceptance test; feature not implemented · **Owner:** E + F
+**Found:** 2026-10-27 (Nearby threat review)
+
+If the announce carries the stable install public key, or if it is emitted at a
+fixed cadence, a nearby sniffer can follow the device across epochs, channels or
+days even after the nickname and rotating sender ID change. Reusing the install
+key in an open channel is worse than the normal channel case because there is no
+roster gate on who can observe and correlate it.
+
+**Impact:** Presence/location tracking, arrival/departure inference and
+conversation-rhythm analysis; a stable key links a user across Nearby sessions.
+
+**Recommendation:** derive a per-channel, per-epoch announce key with a secret
+and rotate it every 15 minutes; derive `sender_id` from that epoch key with the
+v1 rule so it is channel- and epoch-bound. Never put the install key on the
+wire. Jitter announces (30 s base + 0–5 s) and coalesce relays; do not beacon at
+a fixed period. Keep clip timing/size as a documented residual (SEC-011).
+
+**Verification:** `NearbyChannelAttackTest > stable install key and fixed
+announce cadence are not exposed` checks that the install public-key bytes do
+not occur in announce frames, that sender ID and epoch key change across
+epochs, and that generated announce delays leave the jitter window, are not
+constant, and differ between devices.
+
+**CI result (run `PENDING`):** see the `security-harness` job output line
+`[SEC-020] tracking: ...`.
+
+---
+
+## SEC-021 — Nearby peer count can be inflated; a relay can eclipse a segment
+
+**Severity:** Medium (High for a successful eclipse) ·
+**Status:** Open — design acceptance test; feature not implemented · **Owner:** D + F
+**Found:** 2026-10-27 (Nearby threat review)
+
+A relay can claim an arbitrary peer count or forward a forged peer list. If the
+UI trusts that number, the crowd looks larger than it is. Conversely, a relay
+that drops announces/clips makes a segment disappear (eclipse); flooding cannot
+prove that "no peers" means "nobody is there".
+
+**Impact:** Misleading crowd size and false trust; silent suppression of peers
+or clips behind a malicious relay.
+
+**Recommendation:** count only locally authenticated, recently heard identities
+(plus direct links where available); never accept a peer count or peer list from
+a payload. Deduplicate by identity, not nickname or claimed count. Expire silent
+peers (target 15 min) and label the number "nearby / recently heard", not
+"network size". Keep direct paths and show last-seen/uncertainty; document that
+an in-path relay can always suppress traffic.
+
+**Verification:** `NearbyChannelAttackTest > relay cannot inflate peer count or
+eclipse a direct peer` sends a claimed count of 65,535, repeats it with fresh
+message IDs, injects a forged announce, and verifies the count stays at the two
+authenticated identities; a relay that does not forward Bob cannot make Bob
+appear; the direct path still delivers Alice's clip; silent peers expire to
+zero instead of the claimed value.
+
+**CI result (run `PENDING`):** see the `security-harness` job output line
+`[SEC-021] eclipse/count: ...`.
 
 ---
 

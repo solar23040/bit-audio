@@ -19,7 +19,10 @@ import org.junit.Test
  * failing the build; every fixed property is a hard assertion so a regression
  * turns CI red.
  */
-class MeshAttackTest {
+// NearbyChannelAttackTest is inherited so the existing CI test filter
+// (--tests MeshAttackTest) also runs the Nearby threat cases. It remains a
+// standalone suite when the whole harness module is executed.
+class MeshAttackTest : NearbyChannelAttackTest() {
 
     @Test
     fun `spoofed sender is dropped and never relayed`() = runTest {
