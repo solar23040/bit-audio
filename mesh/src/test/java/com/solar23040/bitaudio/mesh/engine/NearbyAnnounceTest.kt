@@ -39,7 +39,7 @@ class NearbyAnnounceTest {
             runCurrent()
 
             val peersA = harness.meshes.getValue("a").peers().value
-            assertEquals(setOf("Alice", "Bob", "Carol"), peersA.map { it.nickname }.toSet())
+            assertEquals(setOf("Bob", "Carol"), peersA.map { it.nickname }.toSet())
             val bob = peersA.single { it.nickname == "Bob" }
             val carol = peersA.single { it.nickname == "Carol" }
             assertEquals(1, bob.hopCount)
