@@ -36,6 +36,8 @@ data class VoiceNote(
     val outgoing: Boolean,
     val state: NoteState,
     val createdAt: Long,
+    /** Identity fingerprint of the sender; empty for locally-authored notes. */
+    val senderFingerprint: String = "",
 )
 
 class NoteRepository(context: Context, private val scope: CoroutineScope) : NoteSink {
@@ -135,6 +137,7 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) : Note
         put("outgoing", outgoing)
         put("state", state.name)
         put("createdAt", createdAt)
+        put("senderFingerprint", senderFingerprint)
     }
 
     private fun JSONObject.toNote(): VoiceNote? = runCatching {
@@ -160,6 +163,7 @@ class NoteRepository(context: Context, private val scope: CoroutineScope) : Note
             outgoing = optBoolean("outgoing", true),
             state = parsedState,
             createdAt = optLong("createdAt", System.currentTimeMillis()),
+            senderFingerprint = optString("senderFingerprint", ""),
         )
     }.getOrNull()?.takeIf { it.id.isNotBlank() && it.fileName.isNotBlank() }
 }

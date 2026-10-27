@@ -45,6 +45,10 @@ class DefaultCrypto(
     val publicKey: ByteArray
         get() = identityManager.identity().publicKey
 
+    /** Short UI fingerprint of [publicKey], see [IdentityFingerprint]. */
+    val fingerprint: String
+        get() = IdentityFingerprint.of(publicKey)
+
     override fun sign(data: ByteArray): ByteArray = identityManager.identity().sign(data)
 
     override fun verify(senderPublicKey: ByteArray, data: ByteArray, signature: ByteArray): Boolean =

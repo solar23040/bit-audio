@@ -26,6 +26,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 class ChannelViewModel(
     private val graph: AppGraph,
     private val channelId: String,
+    private val nearby: Boolean = false,
 ) : ViewModel() {
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
@@ -52,8 +53,10 @@ class ChannelViewModel(
         stopRequested = false
         recordingJob = viewModelScope.launch {
             graph.stopPlayback()
-            val channel = graph.channels.get(channelId)
-            if (channel == null) {
+            // The public nearby channel always exists; private channels can be
+            // deleted while this screen is open.
+            val channel = if (nearby) null else graph.channels.get(channelId)
+            if (!nearby && channel == null) {
                 sendMessage("This channel is no longer available")
                 return@launch
             }
@@ -103,10 +106,14 @@ class ChannelViewModel(
                 return@launch
             }
 
-            graph.addRecordedNote(channel, recording)
-                .onFailure { error ->
-                    sendMessage(error.message ?: "Could not send this clip")
-                }
+            val result = if (nearby) {
+                graph.addNearbyRecordedNote(recording)
+            } else {
+                graph.addRecordedNote(requireNotNull(channel), recording)
+            }
+            result.onFailure { error ->
+                sendMessage(error.message ?: "Could not send this clip")
+            }
         }
     }
 

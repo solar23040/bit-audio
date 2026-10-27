@@ -159,6 +159,8 @@ colluding receivers performing global traffic analysis, RF jamming.
 | R14 | Malformed input never crashes the app; a 1-hour fuzz run against a live build stays up | C/D/G | `fuzz_packets.py`, SEC-003/012 |
 | R15 | UI binds an alias to the roster identity and shows a stable fingerprint/safety number; unknown senders are marked | F | UI review, SEC-013 |
 | R16 | Receipts/retransmit requests are authenticated or rate-limited so they cannot amplify traffic | C | design review, SEC-009 |
+| R17 | `MEMBER_ANNOUNCE` is signed but never sealed; receivers verify it with the carried identity key, drop malformed/forged frames, and rate-limit per identity | D/E | forged/flood tests |
+| R18 | Nearby peers expire after the local timeout and the app's mute/block list suppresses both peer rows and incoming clips | D/F | expiry + muted-clip tests |
 
 ---
 
@@ -172,6 +174,8 @@ Document this in the README; do not market it as anonymous.
 | BLE address | Public/static MAC or long-lived random static address lets a sniffer follow a device | OS/controller address rotation, no bonding for mesh (C) | OS-dependent; some vendors expose identity addresses |
 | Advertisement payload | Device name, service UUID, channel name, manufacturer data can fingerprint the app/channel | Advertise only the app service UUID; no name/channel/alias; rotate payload (C/F) | App presence itself is detectable |
 | Public `channel_id` | Stable 8-byte HMAC appears in every header; lets any sniffer group packets by channel | Accept (needed for relay filtering); document | Channel-level traffic volume/timing visible without the key |
+| Nearby channel | The `"nearby"` channel key is public and identical everywhere, so clips and announces are readable by anyone in range | Accept by design; never put private content there; UI labels it public | Nearby speech/content is public; muting is only local |
+| Nickname + fingerprint | `MEMBER_ANNOUNCE` broadcasts a chosen nickname and stable identity fingerprint to nearby devices and relays | User controls nickname, can hide (discoverable off) or rotate identity | A nearby observer can recognise a returning device until rotation |
 | Sender ID | 8-byte ID rotates per 15-min epoch and is derived with the channel key | Random-looking 8 bytes; roster resolution only for members | Packets from one sender in the same epoch are linkable; epoch boundaries correlate with timing |
 | Clip timing/size | PTT timing reveals conversation rhythm; sizes reveal duration | Size bucketing/padding (stretch), batching (stretch) | Not solved in MVP |
 | Counter | Monotonic per identity; linkable across epochs if an observer knows the identity | Counter is inside the signed header, not displayed | A member/relay can correlate with roster knowledge |
@@ -202,6 +206,8 @@ parts the docs leave to Phase 5. They are deliberately generous versus a 15 s /
 | Verify rate | 20 signatures/s per claimed sender; cheapest checks first | Ed25519 is CPU-expensive on low-end phones |
 | Relay retention | 24 h default, configurable | Store-and-forward without indefinite retention |
 | Relay storage | 50 MB global, 20 MB per channel; evict oldest (target) | No disk exhaustion |
+| Nearby announce rate | 1 accepted per identity per 5 s (burst 2); quiet peers expire after 90 s | Presence updates usable, flood bounded |
+| Nearby peer table | 512 identities, expired entries swept every 5 s | Bound memory while walking through crowds |
 | History | User-deletable; no hidden copies | Privacy expectations |
 
 The exact numbers can move, but the bounds must exist and be enforced **before**
@@ -246,13 +252,16 @@ and Agent C's GATT characteristic/notify contract is known.
    not human intent.
 7. **BLE stack flaws.** OEM BLE bugs can crash/hang the transport; the app must
    fail soft and reconnect, but cannot fix the stack.
-8. **DoS cannot be fully prevented on a shared medium.** Rate limits reduce
+8. **Nearby is public.** The well-known nearby channel key is not a secret.
+   Announcements and clips on it are authenticated at best, and any device in
+   range can read them. Private conversations require a QR/passphrase channel.
+9. **DoS cannot be fully prevented on a shared medium.** Rate limits reduce
    amplification and battery impact; a local jammer can always deny radio.
-9. **In-path relay testing is deferred.** The Python harness injects frames via
+10. **In-path relay testing is deferred.** The Python harness injects frames via
    a GATT characteristic. A true on-path malicious relay (ESP32 or second
    adapter) is planned after Agent C publishes the GATT layout; corruption and
    drop behaviour is still covered by injection tests.
-10. **8-byte IDs.** `channel_id`/`sender_id` truncation gives 64-bit identifiers;
+11. **8-byte IDs.** `channel_id`/`sender_id` truncation gives 64-bit identifiers;
     collisions are possible but not attacker-controllable at practical cost.
     Monitor roster collisions.
 

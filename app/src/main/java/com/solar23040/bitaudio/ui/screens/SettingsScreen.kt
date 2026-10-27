@@ -53,7 +53,7 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val settings by graph.settings.settings.collectAsStateWithLifecycle()
-    val publicId by graph.identity.publicId.collectAsStateWithLifecycle()
+    val fingerprint by graph.runtime.identityFingerprint.collectAsStateWithLifecycle()
     var nameInput by remember(settings.displayName) { mutableStateOf(settings.displayName) }
     var ttl by remember(settings.defaultTtl) { mutableFloatStateOf(settings.defaultTtl.toFloat()) }
     var showRotateConfirm by remember { mutableStateOf(false) }
@@ -88,13 +88,13 @@ fun SettingsScreen(
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(
-                        onClick = { graph.settings.setDisplayName(nameInput) },
+                        onClick = { graph.setNickname(nameInput) },
                         enabled = nameInput.isNotBlank() && nameInput != settings.displayName,
                     ) {
                         Text("Save")
                     }
                     Text(
-                        text = "Shown on notes you send.",
+                        text = "Shown as nickname#fingerprint to nearby phones.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.align(Alignment.CenterVertically),
@@ -152,6 +152,26 @@ fun SettingsScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Column(modifier = Modifier.weight(1f)) {
+                        Text("Discoverable nearby", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            text = "Announce your nickname and fingerprint on the public " +
+                                "nearby channel. You still hear others when this is off.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = settings.discoverable,
+                        onCheckedChange = { graph.setDiscoverable(it) },
+                    )
+                }
+
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
                         Text("Scan duty cycle", style = MaterialTheme.typography.titleSmall)
                         Text(
                             text = "Scan 10s, rest 20s while the mesh service runs. " +
@@ -171,23 +191,30 @@ fun SettingsScreen(
 
             SettingsSection(title = "Identity") {
                 Text(
-                    text = "Sender ID",
+                    text = "Fingerprint",
                     style = MaterialTheme.typography.titleSmall,
                 )
                 Text(
-                    text = publicId,
-                    style = MaterialTheme.typography.bodyMedium,
+                    text = fingerprint.ifBlank { "Not loaded yet" },
+                    style = MaterialTheme.typography.headlineSmall,
                     fontFamily = FontFamily.Monospace,
                 )
                 Text(
-                    text = "This is a local placeholder ID. Phase 2 replaces it with the " +
-                        "signed Ed25519 identity and rotating sender IDs from :crypto.",
+                    text = "Nearby peers see you as ${settings.displayName}#" +
+                        fingerprint.ifBlank { "------" } +
+                        ". This is SHA-256 of your Ed25519 public key, not a secret.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 OutlinedButton(onClick = { showRotateConfirm = true }) {
-                    Text("Rotate sender ID")
+                    Text("Rotate identity")
                 }
+                Text(
+                    text = "Rotating creates a new key and fingerprint. Existing notes stay " +
+                        "playable, but peers see you as a new phone.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             HorizontalDivider()
@@ -208,11 +235,10 @@ fun SettingsScreen(
             HorizontalDivider()
 
             SettingsSection(title = "About") {
-                Text("Bit Audio 0.1.0 (MVP shell)", style = MaterialTheme.typography.bodyMedium)
+                Text("Bit Audio 0.1.0", style = MaterialTheme.typography.bodyMedium)
                 Text(
-                    text = "Push-to-talk over a BLE mesh. No servers, no accounts. " +
-                        "This build uses a PCM/WAV audio fallback and an offline mesh " +
-                        "placeholder; Opus, BLE, and end-to-end crypto land in Phase 2.",
+                    text = "Push-to-talk over a BLE mesh. No servers, no accounts. Nearby " +
+                        "clips are public and signed; private channels use a shared QR key.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -223,17 +249,18 @@ fun SettingsScreen(
     if (showRotateConfirm) {
         AlertDialog(
             onDismissRequest = { showRotateConfirm = false },
-            title = { Text("Rotate sender ID?") },
+            title = { Text("Rotate identity?") },
             text = {
                 Text(
-                    "A new random sender ID will be generated. This does not delete " +
-                        "notes or channels.",
+                    "A new Ed25519 key and fingerprint will be generated. Your nickname, " +
+                        "channels and notes stay on this phone, but nearby peers see you " +
+                        "as a new device.",
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        graph.identity.rotate()
+                        graph.rotateIdentity()
                         showRotateConfirm = false
                     },
                 ) {

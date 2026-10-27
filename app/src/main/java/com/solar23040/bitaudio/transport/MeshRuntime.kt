@@ -1,6 +1,8 @@
 package com.solar23040.bitaudio.transport
 
 import com.solar23040.bitaudio.mesh.MeshMessage
+import com.solar23040.bitaudio.mesh.NearbyPeer
+import kotlinx.coroutines.flow.StateFlow
 
 /**
  * App-facing send/receive boundary for the mesh.
@@ -28,12 +30,27 @@ interface MeshRuntime : MeshPort {
     /** False while the real BLE/mesh implementation is not wired in. */
     val isAvailable: Boolean
 
+    /** Peers currently heard on the public nearby channel. */
+    val nearbyPeers: StateFlow<List<NearbyPeer>>
+
+    /** Short fingerprint of this install's identity key, empty until loaded. */
+    val identityFingerprint: StateFlow<String>
+
     fun start()
 
     fun stop()
 
     /** Scan duty-cycle hook; safe to call when BLE is not running. */
     fun setScanning(enabled: Boolean)
+
+    /** Update the nickname sent in future announcements. */
+    fun setNickname(nickname: String)
+
+    /** When false, stop announcing this device on the nearby channel. */
+    fun setDiscoverable(enabled: Boolean)
+
+    /** Creates a fresh Ed25519 identity; the old one can no longer decrypt. */
+    fun rotateIdentity()
 
     /**
      * Registers a callback fired once the mesh is ready to publish (after every

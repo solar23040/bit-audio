@@ -59,6 +59,7 @@ fun ChannelListScreen(
     onOpenChannel: (String) -> Unit,
     onJoinChannel: () -> Unit,
     onOpenSettings: () -> Unit,
+    bottomBar: @Composable () -> Unit = {},
 ) {
     val channels by graph.channels.channels.collectAsStateWithLifecycle()
     val notes by graph.notes.notes.collectAsStateWithLifecycle()
@@ -85,6 +86,7 @@ fun ChannelListScreen(
                 text = { Text("New channel") },
             )
         },
+        bottomBar = bottomBar,
     ) { innerPadding ->
         Column(
             modifier = Modifier

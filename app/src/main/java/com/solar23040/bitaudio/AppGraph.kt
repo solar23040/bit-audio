@@ -2,6 +2,7 @@ package com.solar23040.bitaudio
 
 import android.content.Context
 import android.os.SystemClock
+import com.bitaudio.crypto.NearbyChannel
 import com.meshvoice.audio.ClipPlayer
 import com.meshvoice.audio.EncodedAudioClip
 import com.meshvoice.audio.VoiceRecorder
@@ -9,19 +10,22 @@ import com.solar23040.bitaudio.audio.RecordedClip
 import com.solar23040.bitaudio.data.Channel
 import com.solar23040.bitaudio.data.ChannelRepository
 import com.solar23040.bitaudio.data.ClipStore
-import com.solar23040.bitaudio.data.IdentityStore
 import com.solar23040.bitaudio.data.NoteRepository
+import com.solar23040.bitaudio.data.PeerPreferencesRepository
 import com.solar23040.bitaudio.data.SettingsRepository
 import com.solar23040.bitaudio.data.VoiceNote
 import com.solar23040.bitaudio.invite.ChannelIdCodec
 import com.solar23040.bitaudio.invite.ChannelInviteData
+import com.solar23040.bitaudio.mesh.MeshMessage
 import com.solar23040.bitaudio.pipeline.ClipPlayback
 import com.solar23040.bitaudio.pipeline.VoicePipeline
 import com.solar23040.bitaudio.transport.MeshRuntime
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -30,13 +34,24 @@ class AppGraph(context: Context) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     val settings = SettingsRepository(appContext)
-    val identity = IdentityStore(appContext)
+    val peerPrefs = PeerPreferencesRepository(appContext)
     val channels = ChannelRepository(appContext, scope)
     val notes = NoteRepository(appContext, scope)
     val clips = ClipStore(appContext)
 
     val recorder = VoiceRecorder()
     val player = ClipPlayer()
+
+    private val _nearbyChannelId = MutableStateFlow(NearbyChannel.channelIdHex)
+
+    /** Public nearby channel every install shares. */
+    val nearbyChannelId: StateFlow<String> = _nearbyChannelId.asStateFlow()
+
+    /**
+     * Real BLE transport + mesh. Nothing else in `:app` constructs transport or
+     * mesh objects directly; the foreground service only sees [MeshRuntime].
+     */
+    val runtime: MeshRuntime = BleMeshRuntime(appContext, channels, scope)
 
     /** Record -> Opus -> publish, and receive -> Opus -> note -> playback. */
     val pipeline = VoicePipeline(
@@ -50,15 +65,17 @@ class AppGraph(context: Context) {
             override fun stop() = player.stop()
         },
         scope = scope,
+        shouldAccept = { message -> !peerPrefs.isSuppressed(message.senderFingerprint) },
+        senderLabel = { message -> labelFor(message) },
+        // Nearby is a public feed: new clips appear in the list but do not
+        // start playing over whatever the user is already listening to.
+        autoPlayReceived = { message -> message.channel.hex != _nearbyChannelId.value },
     )
 
-    /**
-     * Real BLE transport + mesh. Nothing else in `:app` constructs transport or
-     * mesh objects directly; the foreground service only sees [MeshRuntime].
-     */
-    val runtime: MeshRuntime = BleMeshRuntime(appContext, channels, scope)
-
     init {
+        runtime.setNickname(settings.current.displayName)
+        // Do not announce the default "Me" name before onboarding.
+        runtime.setDiscoverable(settings.current.onboarded && settings.current.discoverable)
         pipeline.attach(runtime)
         runtime.onReady { scope.launch { pipeline.retryQueued() } }
         scope.launch {
@@ -67,6 +84,20 @@ class AppGraph(context: Context) {
             expired.forEach { clips.delete(it.fileName) }
         }
     }
+
+    fun setNickname(nickname: String) {
+        val wasOnboarded = settings.current.onboarded
+        settings.setDisplayName(nickname)
+        runtime.setNickname(settings.current.displayName)
+        if (!wasOnboarded) runtime.setDiscoverable(settings.current.discoverable)
+    }
+
+    fun setDiscoverable(enabled: Boolean) {
+        settings.setDiscoverable(enabled)
+        runtime.setDiscoverable(settings.current.onboarded && enabled)
+    }
+
+    fun rotateIdentity() = runtime.rotateIdentity()
 
     fun createChannel(name: String, alias: String): Channel {
         val key = ChannelIdCodec.randomKey()
@@ -128,6 +159,17 @@ class AppGraph(context: Context) {
             pipeline.publish(channel.id, channel.alias, clip.pcm, clip.peaks)
         }
 
+    /** Publishes a public hold-to-talk clip on the nearby channel. */
+    suspend fun addNearbyRecordedNote(clip: RecordedClip): Result<VoiceNote> =
+        withContext(Dispatchers.IO) {
+            pipeline.publish(
+                channelId = _nearbyChannelId.value,
+                alias = settings.current.displayName,
+                pcm = clip.pcm,
+                peaks = clip.peaks,
+            )
+        }
+
     /** Plays a stored note (local or received); the pipeline reports the playing note ID. */
     suspend fun playNote(note: VoiceNote): Result<Unit> = pipeline.play(note)
 
@@ -141,4 +183,15 @@ class AppGraph(context: Context) {
 
     fun recordingElapsedMs(startedAtElapsedRealtime: Long): Long =
         (SystemClock.elapsedRealtime() - startedAtElapsedRealtime).coerceAtLeast(0L)
+
+    private fun labelFor(message: MeshMessage): String {
+        val fingerprint = message.senderFingerprint
+        if (fingerprint.isNotEmpty()) {
+            runtime.nearbyPeers.value
+                .firstOrNull { it.fingerprint == fingerprint }
+                ?.let { peer -> return peer.nickname }
+            return "Peer ${fingerprint.take(6)}"
+        }
+        return "Peer ${message.senderId.take(4)}"
+    }
 }

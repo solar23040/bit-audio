@@ -153,11 +153,27 @@ data class MeshMessage(
     val timestampMs: Long,
     val hopCount: Int,
     val payload: ByteArray,   // EncodedAudioClip.toPayload()
+    val senderFingerprint: String = "", // 6 hex chars, empty if unknown
 )
+
+data class NearbyPeer(
+    val fingerprint: String,
+    val nickname: String,
+    val rssi: Int?,
+    val hopCount: Int,
+    val lastSeenMs: Long,
+    val capabilities: Int,
+) {
+    val isDirect: Boolean
+}
 
 interface Mesh {
     suspend fun publish(channel: ChannelId, payload: ByteArray)
     fun onMessage(callback: (MeshMessage) -> Unit): AutoCloseable
+}
+
+class MeshEngine(...) : Mesh {
+    fun peers(): StateFlow<List<NearbyPeer>>  // nearby discovery
 }
 ```
 
@@ -173,6 +189,13 @@ interface Mesh {
 - Invalid, unauthenticated, expired, or wrong-channel packets are dropped
   silently. `MeshException` is only for local failures (unknown channel, storage
   full).
+- `MeshEngine` always adds the public `NearbyChannel`. Discoverable nodes send
+  `MEMBER_ANNOUNCE` (nickname + identity key) on peer connect and every
+  `announceIntervalMs`; `peers()` exposes live peers sorted direct-first, with
+  `hopCount = 1` for a neighbour and `2` for one relay. Muted/blocked policy is
+  app-local and never changes the mesh.
+- `MeshMessage.senderFingerprint` is `SHA-256(sender identity key)[0..3]` as
+  lowercase hex, empty only when no stable identity could be resolved.
 - Wire format and limits: [`packet-format.md`](packet-format.md).
 
 ## Crypto
@@ -187,12 +210,15 @@ interface Crypto {
 
 class DefaultCrypto(identityManager: IdentityManager) : Crypto {
     val publicKey: ByteArray
+    val fingerprint: String
 }
 
 object Ed25519
 object XChaCha20Poly1305
 object ChannelKeys
 object RotatingSenderId
+object NearbyChannel
+object IdentityFingerprint
 class PeerDirectory
 class ReplayGuard
 class IdentityManager(store: SecretStore)
@@ -216,7 +242,13 @@ object PacketCrypto
   channel ID. Keys are byte arrays; never log them.
 - `RotatingSenderId` derives the 8-byte `sender_id` per 15-minute epoch.
   `PeerDirectory` holds the channel roster and resolves an ID back to a stable
-  Ed25519 key, checking adjacent epochs.
+  Ed25519 key, checking adjacent epochs. The nearby channel has no roster:
+  members resolve senders from verified `MEMBER_ANNOUNCE` records instead.
+- `NearbyChannel` exposes the well-known public key and channel ID. Its payloads
+  are signed, not secret.
+- `IdentityFingerprint.of(publicKey)` returns the first 3 bytes of
+  `SHA-256(publicKey)` as 6 lowercase hex characters; never treat it as a
+  secret.
 - `ReplayGuard` checks timestamp, message ID, and an optional 64-bit sliding
   counter window. Mesh owns the actual cache retention (see packet format).
 - `PacketCrypto` is the single definition of the signing transcript and AEAD

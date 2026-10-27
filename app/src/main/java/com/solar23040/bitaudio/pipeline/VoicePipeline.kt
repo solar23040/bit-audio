@@ -60,6 +60,12 @@ class VoicePipeline(
     private val scope: CoroutineScope,
     private val codecFactory: () -> OpusClipCodec = { OpusClipCodec() },
     private val clock: () -> Long = System::currentTimeMillis,
+    /** Local policy hook: muted/blocked peers never reach storage or playback. */
+    private val shouldAccept: (MeshMessage) -> Boolean = { true },
+    /** Display name for a verified sender, resolved from the nearby peer list. */
+    private val senderLabel: (MeshMessage) -> String = { "Peer ${it.senderId.take(4)}" },
+    /** Nearby traffic is public; do not play a stranger's clip unprompted. */
+    private val autoPlayReceived: (MeshMessage) -> Boolean = { true },
 ) {
     private val lock = Any()
     private val sendMutex = Mutex()
@@ -163,6 +169,7 @@ class VoicePipeline(
      * decode and write files; the mesh callback itself only launches this.
      */
     suspend fun receive(message: MeshMessage) {
+        if (!shouldAccept(message)) return
         val payload = message.payload.copyOf()
 
         // A mesh-level receipt/echo for a note we published: upgrade its state
@@ -185,7 +192,7 @@ class VoicePipeline(
         val note = VoiceNote(
             id = UUID.randomUUID().toString(),
             channelId = message.channel.hex,
-            senderAlias = "Peer ${message.senderId.take(4)}",
+            senderAlias = senderLabel(message),
             fileName = file.name,
             durationMs = clip.durationMs.toLong(),
             sizeBytes = payload.size.toLong(),
@@ -194,9 +201,10 @@ class VoicePipeline(
             outgoing = false,
             state = NoteState.Delivered,
             createdAt = clock(),
+            senderFingerprint = message.senderFingerprint,
         )
         notes.add(note)
-        playClip(note.id, clip)
+        if (autoPlayReceived(message)) playClip(note.id, clip)
     }
 
     private suspend fun send(note: VoiceNote, payload: ByteArray): VoiceNote {
